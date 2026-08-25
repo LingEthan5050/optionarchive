@@ -1,0 +1,19 @@
+# Secrets - present from the first commit, per design doc section 8.
+.env
+*.pem
+
+# The archive itself is never in git; it is backed up separately (section 8).
+data/*
+!data/watchlist.yaml
+
+# Notebook outputs (section 5). Notebooks themselves are tracked; strip
+# outputs before committing:  pip install nbstripout && nbstripout --install
+.ipynb_checkpoints/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
