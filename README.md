@@ -124,6 +124,10 @@ these are not what you would guess:
   request. Quotes are chunked accordingly.
 - `implied-volatility-index-rank` and `implied-volatility-percentile` come back
   as **strings**, not numbers. Normalized to `float64` on ingest.
+- `implied_volatility_index` is a **decimal** (`0.158`), but
+  `historical_volatility_30_day`, `historical_volatility_60_day` and
+  `iv_hv_30_day_difference` are **percentage points** (`12.63`). Stored as
+  returned. Rescale before comparing: `ivx * 100 - hv30`.
 - Earnings fields are **nested** under `earnings`, and the dividend rate is
   named `dividend-rate-per-share`. Both flattened to match the schema.
 - The nested chain returns **one item per root**, so adjusted roots (`SPY1`)

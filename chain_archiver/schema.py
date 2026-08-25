@@ -48,6 +48,12 @@ METRICS_SCHEMA = pa.schema(
         pa.field("snapshot_ts_utc", TIMESTAMP, nullable=False),
         pa.field("session", pa.string(), nullable=False),
         pa.field("symbol", pa.string(), nullable=False),
+        # SCALE TRAP, verified against live data: implied_volatility_index is
+        # a DECIMAL (0.158 = 15.8%), while historical_volatility_30_day /
+        # _60_day and iv_hv_30_day_difference are PERCENTAGE POINTS
+        # (12.63 = 12.63%). tastytrade computes the difference as
+        # ivx * 100 - hv30. Stored as returned, per the raw-first rule;
+        # any comparison must rescale.
         pa.field("implied_volatility_index", pa.float64()),
         pa.field("implied_volatility_index_rank", pa.float64()),
         pa.field("implied_volatility_percentile", pa.float64()),
