@@ -29,6 +29,35 @@ cp .env.example .env
 Fill in `TT_CLIENT_SECRET` and `TT_REFRESH_TOKEN`. `.env` is gitignored from
 the first commit and must never be pasted into a chat window.
 
+## Secrets
+
+`.env` holds the client secret and refresh token. Three things protect it:
+
+1. **Gitignored** from the first commit, so it cannot be staged accidentally.
+2. **Locked down** to the owning user. The default ACL on a Windows user folder
+   grants `BUILTIN\Users:(M)` - any local account could read and modify it.
+   Restrict it with:
+
+   ```
+   icacls .env /inheritance:r /grant:r "%USERNAME%:(R,W)"
+   ```
+
+3. **A pre-commit hook** in `.githooks/` that blocks staging `.env`, any
+   JWT-shaped string, or a populated `TT_` credential. `core.hooksPath` is local
+   config and is not cloned, so enable it once per checkout:
+
+   ```
+   git config core.hooksPath .githooks
+   ```
+
+Scope matters less than it sounds. A `read` token cannot trade, but it can read
+every account, balance, position and transaction on the login - tastytrade has
+no scope narrower than `read`. Treat the file as account credentials.
+
+Refresh tokens never expire, so a leaked one stays valid until revoked. Revoke
+at Manage > My Profile > API > OAuth Applications > Manage > revoke the grant,
+then Create Grant for a replacement.
+
 ## Running a snapshot
 
 Validate credentials and the full fetch path without writing anything:
