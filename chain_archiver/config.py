@@ -47,6 +47,18 @@ class SymbolSpec:
     #: Beyond max_dte, keep monthly ("Regular") expirations out to here.
     monthly_max_dte: int = 365
     #: Keep strikes within this fraction of spot.
+    #:
+    #: Calibrated per symbol to roughly 2.5 standard deviations at max_dte,
+    #: because a single fixed band is not comparable across symbols: +/-35%
+    #: is 5.1 sd on TLT but 0.7 sd on VIX, so the high-IV names an IV-rank
+    #: screener actually surfaces were the most truncated.
+    #:
+    #: Two deliberate asymmetries. The floor stays at 0.35 even where a
+    #: narrower band would suffice today, because these were calibrated in a
+    #: low-vol regime (SPY IV 15%) and every band shrinks in sd terms when
+    #: IV triples - narrowing now is exactly the vol-event regret. And
+    #: strikes cannot be backfilled, so over-wide costs disk while too-narrow
+    #: costs data permanently.
     strike_pct: float = 0.35
 
 
@@ -57,45 +69,54 @@ class SymbolSpec:
 # captured at five symbols is a day the other twenty-five are gone for good,
 # so this is deliberately at full width before the first scheduled run.
 #
-# Index options (SPX, NDX, RUT, VIX) are absent on purpose: they need
-# is_index=True and that path has not been exercised against the live API
-# yet. Add them once it has, not on the first unattended run.
 WATCHLIST: tuple[SymbolSpec, ...] = (
     # Broad index ETFs - the backbone of the dataset.
     SymbolSpec("SPY"),
     SymbolSpec("QQQ"),
     SymbolSpec("IWM"),
     SymbolSpec("DIA"),
+    # Cash-settled index options. Each carries two roots: a standard
+    # AM-settled monthly (SPX, NDX, RUT) and a PM-settled weekly (SPXW,
+    # NDXP, RUTW). Both are archived, and settlement_type distinguishes
+    # them - the distinction matters for expiration-day behaviour.
+    SymbolSpec("SPX", is_index=True),
+    SymbolSpec("NDX", is_index=True),
+    SymbolSpec("RUT", is_index=True),
+    # VIX is the one instrument where a symmetric band is simply the wrong
+    # shape. It is mean-reverting with an enormous right tail - the exchange
+    # lists strikes to 200 against a spot of 15 - and the far OTM calls are
+    # the entire reason to archive it. +/-35% would stop at strike 20.
+    SymbolSpec("VIX", is_index=True, strike_pct=4.00),
     # Sector, commodity and rates ETFs - vol regimes that do not move with
     # the index, which is the point of including them.
-    SymbolSpec("XLE"),
+    SymbolSpec("XLE", strike_pct=0.40),
     SymbolSpec("XLF"),
-    SymbolSpec("XLK"),
-    SymbolSpec("SMH"),
-    SymbolSpec("GDX"),
-    SymbolSpec("GLD"),
+    SymbolSpec("XLK", strike_pct=0.40),
+    SymbolSpec("SMH", strike_pct=0.55),
+    SymbolSpec("GDX", strike_pct=0.80),
+    SymbolSpec("GLD", strike_pct=0.40),
     SymbolSpec("TLT"),
     # High-IV single names with reliable, dateable earnings cycles - the
     # names an IV-rank screener would actually surface.
-    SymbolSpec("AAPL"),
-    SymbolSpec("MSFT"),
-    SymbolSpec("NVDA"),
-    SymbolSpec("AMD"),
-    SymbolSpec("AVGO"),
-    SymbolSpec("MU"),
-    SymbolSpec("TSLA"),
-    SymbolSpec("AMZN"),
-    SymbolSpec("GOOGL"),
-    SymbolSpec("META"),
-    SymbolSpec("NFLX"),
-    SymbolSpec("COIN"),
-    SymbolSpec("PLTR"),
-    SymbolSpec("BA"),
+    SymbolSpec("AAPL", strike_pct=0.40),
+    SymbolSpec("MSFT", strike_pct=0.40),
+    SymbolSpec("NVDA", strike_pct=0.65),
+    SymbolSpec("AMD", strike_pct=0.80),
+    SymbolSpec("AVGO", strike_pct=0.80),
+    SymbolSpec("MU", strike_pct=1.00),
+    SymbolSpec("TSLA", strike_pct=0.65),
+    SymbolSpec("AMZN", strike_pct=0.50),
+    SymbolSpec("GOOGL", strike_pct=0.50),
+    SymbolSpec("META", strike_pct=0.55),
+    SymbolSpec("NFLX", strike_pct=0.50),
+    SymbolSpec("COIN", strike_pct=1.00),
+    SymbolSpec("PLTR", strike_pct=0.80),
+    SymbolSpec("BA", strike_pct=0.50),
     SymbolSpec("DIS"),
     SymbolSpec("JPM"),
-    SymbolSpec("XOM"),
+    SymbolSpec("XOM", strike_pct=0.40),
     SymbolSpec("WMT"),
-    SymbolSpec("CRM"),
+    SymbolSpec("CRM", strike_pct=0.80),
 )
 
 

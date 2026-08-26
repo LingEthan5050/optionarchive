@@ -194,7 +194,18 @@ Applied per symbol in `config.py`:
 
 - **Expirations:** everything out to 120 DTE, plus monthlies (`Regular`) out to
   365. The far tail is illiquid and inflates storage for no analytical value.
-- **Strikes:** within ±35% of spot.
+- **Strikes:** within `strike_pct` of spot, calibrated per symbol to roughly
+  2.5 standard deviations at 120 DTE.
+
+A single fixed strike band is not comparable across symbols. Measured against
+live IV, ±35% is **5.1 sd on TLT but 0.7 sd on VIX** - so the high-IV names an
+IV-rank screener actually surfaces were the most truncated, and VIX was cut off
+at strike 20 against a listed range reaching 200.
+
+The calibration only ever widens; 0.35 stays the floor. These were measured in
+a low-vol regime (SPY IV 15%), and every band shrinks in sd terms when IV
+triples - narrowing now would be precisely the vol-event regret. Over-wide
+costs disk, too-narrow costs data permanently.
 
 A symbol whose underlying quote fails is failed outright rather than archived
 unfiltered — without spot there is no strike filter, and a giant unfiltered
@@ -218,8 +229,10 @@ these are not what you would guess:
 - The nested chain returns **one item per root**, so adjusted roots (`SPY1`)
   arrive alongside the standard one, each with its own `shares-per-contract`.
   Hence `multiplier` is read per root rather than assumed to be 100.
-- Index underlyings (SPX, VIX, NDX) must be requested under `index=` rather
-  than `equity=`; set `is_index=True` on the `SymbolSpec`.
+- Index underlyings (SPX, VIX, NDX, RUT) must be requested under `index=`
+  rather than `equity=`; set `is_index=True` on the `SymbolSpec`. Each returns
+  two roots - an AM-settled monthly (`SPX`) and a PM-settled weekly (`SPXW`) -
+  which is why `settlement_type` is a column.
 - The risk-free rate is published, unauthenticated, at
   `/margin-requirements-public-configuration`. `fetch.fetch_risk_free_rate()`
   reads it — that resolves the open question about where the rate comes from,
