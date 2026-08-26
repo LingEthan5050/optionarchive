@@ -137,6 +137,18 @@ The archive is Parquet on disk. DuckDB queries it in place, no import step:
 duckdb -c "SELECT underlying_symbol, count(*) FROM 'data/chains/**/*.parquet' GROUP BY 1"
 ```
 
+For a browser UI rather than a terminal, DuckDB ships one - no separate app
+to build:
+
+```bash
+python notebooks/ui.py
+```
+
+That registers the partitions as views named `chains` and `metrics` and opens
+DuckDB's notebook-style UI, with schema browsing, autocomplete and result
+grids. The connection is in-memory and the views read the parquet directly, so
+nothing typed into the UI can modify the archive.
+
 Saved queries live in [notebooks/queries.sql](notebooks/queries.sql), including
 a coverage check that catches the silent-hole failure mode where one symbol
 fails for weeks while runs look healthy.
