@@ -18,6 +18,10 @@ uv venv --python 3.14
 uv pip install -e ".[dev]"
 ```
 
+Commands below use the Windows interpreter path. On Linux substitute
+`.venv/bin/python` for `.venv/Scripts/python.exe`, or activate the venv and
+use the `archiver` console script directly.
+
 Register a tastytrade OAuth application with the **`read` scope only**. It
 should be structurally incapable of placing a trade; do not add `trade` scope
 "just in case." Then:

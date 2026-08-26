@@ -56,6 +56,17 @@ def write_partition(
     # requirement in section 1.
     os.replace(tmp, final)
 
+    # The rename is atomic, but on POSIX the directory entry itself is not
+    # durable until the directory is fsynced - without this, a power loss can
+    # leave the partition missing even though the write returned. Windows
+    # cannot open a directory as a file descriptor, so this is POSIX-only.
+    if hasattr(os, "O_DIRECTORY"):
+        dir_fd = os.open(destination, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+
     log.info(
         "Wrote %s rows to %s (%.1f KiB)",
         table.num_rows,
