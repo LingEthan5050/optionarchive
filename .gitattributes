@@ -1,0 +1,10 @@
+# Shell scripts must reach macOS/Linux with LF endings regardless of the
+# committing machine's core.autocrlf. A CRLF script fails at exec time with
+# "bad interpreter: /bin/bash^M", which is an obscure way to lose an hour.
+*.sh text eol=lf
+
+# Same for the launchd/systemd unit files these scripts generate.
+*.plist text eol=lf
+
+# Parquet is binary; never let a filter touch the archive.
+*.parquet binary
