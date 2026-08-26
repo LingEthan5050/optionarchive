@@ -72,7 +72,44 @@ METRICS_SCHEMA = pa.schema(
     ]
 )
 
-SCHEMAS = {"chains": CHAINS_SCHEMA, "metrics": METRICS_SCHEMA}
+#: One row per contract per snapshot, computed from chains (section 4.3).
+#: Regenerable: nothing here is ever written by the fetcher, and deleting the
+#: whole derived tree costs only CPU.
+GREEKS_SCHEMA = pa.schema(
+    [
+        # Join keys back to chains.
+        pa.field("snapshot_ts_utc", TIMESTAMP, nullable=False),
+        pa.field("session", pa.string(), nullable=False),
+        pa.field("occ_symbol", pa.string(), nullable=False),
+        # Carried for convenience so the common queries never need the join.
+        pa.field("underlying_symbol", pa.string(), nullable=False),
+        pa.field("expiration_date", pa.date32()),
+        pa.field("dte", pa.int16()),
+        pa.field("strike", pa.float64()),
+        pa.field("option_type", pa.string()),
+        pa.field("mid", pa.float64()),
+        pa.field("implied_vol", pa.float64()),
+        pa.field("delta", pa.float64()),
+        pa.field("gamma", pa.float64()),
+        pa.field("theta", pa.float64()),
+        pa.field("vega", pa.float64()),
+        pa.field("rho", pa.float64()),
+        pa.field("moneyness", pa.float64()),
+        pa.field("spread_pct", pa.float64()),
+        # Stored per row so the entire history can be recomputed later
+        # without guessing what assumptions this version used.
+        pa.field("risk_free_rate", pa.float64()),
+        pa.field("dividend_yield", pa.float64()),
+        pa.field("model_version", pa.string(), nullable=False),
+    ]
+)
+
+
+SCHEMAS = {
+    "chains": CHAINS_SCHEMA,
+    "metrics": METRICS_SCHEMA,
+    "greeks": GREEKS_SCHEMA,
+}
 
 
 def build_table(rows: list[dict], schema: pa.Schema) -> pa.Table:

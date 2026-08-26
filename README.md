@@ -8,8 +8,9 @@ built to be boring and to start running before anything else in the project
 exists. It writes files. It does not place orders, manage positions, or analyze
 anything.
 
-**Status: Phase 2 in progress.** Capture works, the trading calendar guards
-it, and launchd runs it unattended on macOS. See
+**Status: Phases 1-4 complete.** Capture, calendar guard, run log, healthcheck,
+verify, greeks and the coverage dashboard are all in. Phase 5 is deliberately
+not built - it is the "as earned" tier. See
 [Where this stops](#where-this-stops) for what is deliberately not built yet.
 
 ## Setup
@@ -88,6 +89,17 @@ Useful flags:
 | `-v` | Debug logging, including retries and token refreshes. |
 
 | `--force` | Bypass the trading-day and session-time guards. |
+
+Other commands:
+
+```bash
+archiver derive --all        # greeks for every partition (backfills history)
+archiver verify              # sanity-check written partitions
+archiver status              # recent runs, failures, coverage
+```
+
+`derive`, `verify` and `status` read only what is on disk, so they run on a
+machine that has the archive but no credentials.
 
 Exit codes: `0` success, `1` partial or total failure worth alerting on,
 `2` bad credentials or missing configuration.
@@ -242,15 +254,75 @@ Contracts that return no quote are kept with NULL quote columns. The fact that
 a contract existed and did not quote is itself data; dropping those rows would
 make coverage look better than it was.
 
+## Derived greeks
+
+`archiver derive` reads `chains` and writes `derived/greeks`. Never written by
+the fetcher, so a bug in the math is fixed by deleting the derived tree and
+re-running - the archive itself is never at risk.
+
+Black-Scholes with continuous dividend yield, IV solved by Brent's method
+bracketed to [0.001, 5.0]. `risk_free_rate`, `dividend_yield` and
+`model_version` are stored per row, so recomputing history later never
+requires guessing what assumptions a given version used. The rate comes from
+tastytrade's own published figure.
+
+Roughly 72% of rows solve. The rest are left **NULL rather than filled with a
+fabricated number**, because a garbage IV that looks like a number is far more
+dangerous downstream than a missing one. Rows are refused when the bid is
+zero, `spread_pct > 0.5`, the contract is at expiry, or the price violates its
+own arbitrage bounds.
+
+Two known limitations, both deliberate:
+
+- Equity and ETF options are **American**; this prices them as European. The
+  error is concentrated in deep ITM puts with early-exercise value. Index
+  options (SPX, NDX, RUT) are genuinely European, so they are exact.
+- Solved ATM IV runs 1-3 vol points below tastytrade's `implied_volatility_index`.
+  That is expected, not an error: their index is a variance-swap-style
+  calculation across the whole strike strip, and equity skew lifts it above ATM.
+
+## Monitoring
+
+The failure mode that matters is silent death - the job stops and you notice in
+March. Set `HEALTHCHECK_URL` in `.env`; the run pings it on success and
+`/fail` on failure, and the service alerts when a ping does not arrive.
+Silence is the alarm. Unset, the job runs unmonitored rather than refusing to
+run.
+
+`data/runs.db` records every run and every per-symbol failure. It answers the
+questions Parquet cannot: which symbol has been failing all week, when wall
+time started creeping, which days have no run at all.
+
+```bash
+streamlit run dashboard/coverage.py
+```
+
+The coverage heatmap is the ops view, and the one page exempt from the
+three-times rule - it catches the silent hole where a single symbol fails for
+weeks while every run reports success. Only NYSE trading days are shown, so
+weekends never read as gaps. Everything else stays in notebooks.
+
+## Backup
+
+```bash
+ARCHIVE_REMOTE=b2:my-bucket/optionarchive ./deploy/backup.sh
+```
+
+Copy, not sync-with-delete: a local mistake must not propagate to the backup.
+The local copy stays authoritative so analysis never pays egress.
+
 ## Where this stops
 
-Phase 1 is capture only. Deliberately not built yet:
+Phase 5 is deliberately unbuilt, per the "as earned" rule:
 
-- **Run log.** No `runs.db`; per-symbol results print to the log instead.
-- **Healthcheck ping**, `verify`, backup sync, and the coverage heatmap.
-- **`derive`.** No greeks, no IV solving. `streamer_symbol` is stored from day
-  one so DXLink can subscribe in v2 without a migration.
+- **More dashboard pages.** A question earns a page after being asked three
+  times. Until then it is a notebook query.
+- **The morning screener.** Wants real IV-rank history behind it first.
+- **DXLink streaming** for vendor greeks. `streamer_symbol` is stored from day
+  one so v2 can subscribe without a migration, and vendor greeks will land in
+  `derived/greeks_dxlink/` alongside the computed ones rather than replacing
+  them - having both is how you check your model against theirs.
 
-Retries (3 attempts, exponential backoff with jitter, on 429 and 5xx only),
-per-symbol isolation, atomic writes and idempotency are in already, because
-they are listed as non-negotiable and each is cheap.
+Also not built: `watchlist.yaml`. The universe still lives in `config.py`,
+which is version controlled and typed, and has not yet been painful enough to
+warrant a config file.

@@ -7,7 +7,7 @@ data/watchlist.yaml (version controlled) without changing SymbolSpec.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -127,25 +127,35 @@ class Settings:
     api_url: str
     data_dir: Path
     send_api_version: bool
+    #: Dead-man's switch endpoint. Unset means the job runs unmonitored
+    #: rather than refusing to run.
+    healthcheck_url: str | None = None
+
+    def with_data_dir(self, data_dir: Path) -> "Settings":
+        return replace(self, data_dir=data_dir.resolve())
 
     @classmethod
-    def from_env(cls) -> Settings:
+    def from_env(cls, require_credentials: bool = True) -> "Settings":
         load_dotenv()
         secret = os.environ.get("TT_CLIENT_SECRET", "").strip()
         refresh = os.environ.get("TT_REFRESH_TOKEN", "").strip()
-        missing = [
-            name
-            for name, value in (
-                ("TT_CLIENT_SECRET", secret),
-                ("TT_REFRESH_TOKEN", refresh),
-            )
-            if not value
-        ]
-        if missing:
-            raise RuntimeError(
-                f"Missing required environment variable(s): {', '.join(missing)}. "
-                "Copy .env.example to .env and fill them in."
-            )
+
+        # derive, verify and status only read what is already on disk, so
+        # they must work on a machine that has the archive but no keys.
+        if require_credentials:
+            missing = [
+                name
+                for name, value in (
+                    ("TT_CLIENT_SECRET", secret),
+                    ("TT_REFRESH_TOKEN", refresh),
+                )
+                if not value
+            ]
+            if missing:
+                raise RuntimeError(
+                    f"Missing required environment variable(s): {', '.join(missing)}. "
+                    "Copy .env.example to .env and fill them in."
+                )
 
         is_cert = os.environ.get("TT_ENV", "production").lower() == "cert"
         return cls(
@@ -154,4 +164,5 @@ class Settings:
             api_url=CERT_API_URL if is_cert else PROD_API_URL,
             data_dir=Path(os.environ.get("ARCHIVE_DATA_DIR", "data")).resolve(),
             send_api_version=not is_cert,
+            healthcheck_url=os.environ.get("HEALTHCHECK_URL", "").strip() or None,
         )
