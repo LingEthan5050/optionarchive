@@ -14,9 +14,10 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from chain_archiver import calendar as trading_calendar
 from chain_archiver import fetch, writer
 from chain_archiver.auth import AuthError, TastytradeClient
-from chain_archiver.config import EASTERN, PHASE1_WATCHLIST, Settings, SymbolSpec
+from chain_archiver.config import EASTERN, WATCHLIST, Settings, SymbolSpec
 from chain_archiver.schema import CHAINS_SCHEMA, METRICS_SCHEMA, build_table
 
 log = logging.getLogger("chain_archiver")
@@ -83,9 +84,27 @@ def run_snapshot(
     specs: tuple[SymbolSpec, ...],
     settings: Settings,
     dry_run: bool,
+    force: bool = False,
 ) -> int:
     snapshot_ts = datetime.now(timezone.utc)
-    trade_date = snapshot_ts.astimezone(EASTERN).date()
+    now_et = snapshot_ts.astimezone(EASTERN)
+    trade_date = now_et.date()
+
+    # A scheduler fires this job on a fixed clock; the calendar decides
+    # whether this particular firing should do anything. Both skips are
+    # successful outcomes, not failures, so they exit 0 - otherwise every
+    # weekend would look like an outage to the monitoring (section 6).
+    if not force:
+        try:
+            target = trading_calendar.check_runnable(session, now_et)
+        except trading_calendar.NotATradingDay as exc:
+            log.info("Skipping: %s", exc)
+            return 0
+        except trading_calendar.WrongTimeForSession as exc:
+            log.info("Skipping: %s", exc)
+            return 0
+        if trading_calendar.is_early_close(trade_date):
+            log.info("Early close today; %s target is %s ET", session, f"{target:%H:%M}")
 
     log.info(
         "Snapshot %s session=%s at %s (%d symbols)%s",
@@ -176,9 +195,9 @@ def _report(results: list[SymbolResult], chain_rows: int, metric_rows: int) -> N
 
 def _resolve_specs(raw: str | None) -> tuple[SymbolSpec, ...]:
     if not raw:
-        return PHASE1_WATCHLIST
+        return WATCHLIST
     wanted = [s.strip().upper() for s in raw.split(",") if s.strip()]
-    known = {s.symbol: s for s in PHASE1_WATCHLIST}
+    known = {s.symbol: s for s in WATCHLIST}
     # An unknown symbol gets the default filters rather than an error, so
     # ad-hoc runs work without editing config.
     return tuple(known.get(sym, SymbolSpec(sym)) for sym in wanted)
@@ -199,6 +218,11 @@ def main(argv: list[str] | None = None) -> int:
         "--symbols", help="comma-separated override of the watchlist, e.g. SPY,QQQ"
     )
     snap.add_argument("--data-dir", help="override ARCHIVE_DATA_DIR")
+    snap.add_argument(
+        "--force",
+        action="store_true",
+        help="bypass the trading-day and session-time guards (ad-hoc runs)",
+    )
     snap.add_argument("-v", "--verbose", action="store_true")
 
     args = parser.parse_args(argv)
@@ -229,6 +253,7 @@ def main(argv: list[str] | None = None) -> int:
         specs=_resolve_specs(args.symbols),
         settings=settings,
         dry_run=args.dry_run,
+        force=args.force,
     )
 
 

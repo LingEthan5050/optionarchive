@@ -8,7 +8,8 @@ built to be boring and to start running before anything else in the project
 exists. It writes files. It does not place orders, manage positions, or analyze
 anything.
 
-**Status: Phase 1.** Capture works and runs manually. See
+**Status: Phase 2 in progress.** Capture works, the trading calendar guards
+it, and launchd runs it unattended on macOS. See
 [Where this stops](#where-this-stops) for what is deliberately not built yet.
 
 ## Setup
@@ -86,8 +87,47 @@ Useful flags:
 | `--data-dir PATH` | Override `ARCHIVE_DATA_DIR`. |
 | `-v` | Debug logging, including retries and token refreshes. |
 
+| `--force` | Bypass the trading-day and session-time guards. |
+
 Exit codes: `0` success, `1` partial or total failure worth alerting on,
 `2` bad credentials or missing configuration.
+
+A run outside its session window, or on a weekend or holiday, logs a skip and
+exits **0** - it is a correct outcome, not a failure, and treating it as one
+would make every weekend look like an outage. Use `--force` for ad-hoc runs.
+
+## Deployment (macOS)
+
+Two launchd agents, installed by:
+
+```bash
+./deploy/install-macos.sh
+```
+
+It writes `~/Library/LaunchAgents/com.chainarchiver.{am,pm}.plist`, locks
+`.env` to 0600, warns if the system timezone is not `America/New_York`, and
+loads both agents. Idempotent - re-run after moving the repo. Remove with
+`./deploy/uninstall-macos.sh`.
+
+The agents carry no weekday or holiday logic. launchd fires on a fixed clock
+and `chain_archiver.calendar` decides whether that firing should do anything,
+so the NYSE calendar lives in exactly one place. The pm agent fires **twice**,
+at 12:45 and 15:45: on a normal day the 12:45 firing is out of window and
+becomes a no-op, and on an early-close day the 15:45 firing is. Neither the
+plist nor the installer needs to know which days are which.
+
+Two things that will silently cost you snapshots:
+
+- **A sleeping Mac misses runs.** `sudo pmset -a sleep 0 disablesleep 1`, and
+  enable "Start up automatically after a power failure" in Energy Saver.
+- **launchd uses local time.** The 09:45 / 15:45 targets are only correct if
+  the machine is on Eastern. The installer warns, but does not change it.
+
+Logs land in `logs/` (gitignored). Check the agents with:
+
+```bash
+launchctl list | grep chainarchiver
+```
 
 ## Reading the data
 
@@ -181,12 +221,8 @@ make coverage look better than it was.
 
 Phase 1 is capture only. Deliberately not built yet:
 
-- **Trading-day guard.** There is no calendar check, so a manual run on a
-  Saturday will happily write a partition. `pandas_market_calendars` is already
-  declared under the `schedule` extra for Phase 2.
 - **Run log.** No `runs.db`; per-symbol results print to the log instead.
-- **Scheduling**, healthcheck ping, `verify`, backup sync, and the coverage
-  heatmap.
+- **Healthcheck ping**, `verify`, backup sync, and the coverage heatmap.
 - **`derive`.** No greeks, no IV solving. `streamer_symbol` is stored from day
   one so DXLink can subscribe in v2 without a migration.
 

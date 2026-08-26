@@ -50,14 +50,52 @@ class SymbolSpec:
     strike_pct: float = 0.35
 
 
-# Phase 1: five liquid names, enough to prove the pipeline and start the
-# archive accumulating tonight. Expanded to ~30 in Phase 2 (§11).
-PHASE1_WATCHLIST: tuple[SymbolSpec, ...] = (
+# The symbol universe. Around 30: wide enough to be useful, narrow enough
+# that a snapshot stays fast and the archive stays focused.
+#
+# Breadth matters more than it looks, because it cannot be backfilled. A day
+# captured at five symbols is a day the other twenty-five are gone for good,
+# so this is deliberately at full width before the first scheduled run.
+#
+# Index options (SPX, NDX, RUT, VIX) are absent on purpose: they need
+# is_index=True and that path has not been exercised against the live API
+# yet. Add them once it has, not on the first unattended run.
+WATCHLIST: tuple[SymbolSpec, ...] = (
+    # Broad index ETFs - the backbone of the dataset.
     SymbolSpec("SPY"),
     SymbolSpec("QQQ"),
     SymbolSpec("IWM"),
+    SymbolSpec("DIA"),
+    # Sector, commodity and rates ETFs - vol regimes that do not move with
+    # the index, which is the point of including them.
+    SymbolSpec("XLE"),
+    SymbolSpec("XLF"),
+    SymbolSpec("XLK"),
+    SymbolSpec("SMH"),
+    SymbolSpec("GDX"),
+    SymbolSpec("GLD"),
+    SymbolSpec("TLT"),
+    # High-IV single names with reliable, dateable earnings cycles - the
+    # names an IV-rank screener would actually surface.
     SymbolSpec("AAPL"),
+    SymbolSpec("MSFT"),
     SymbolSpec("NVDA"),
+    SymbolSpec("AMD"),
+    SymbolSpec("AVGO"),
+    SymbolSpec("MU"),
+    SymbolSpec("TSLA"),
+    SymbolSpec("AMZN"),
+    SymbolSpec("GOOGL"),
+    SymbolSpec("META"),
+    SymbolSpec("NFLX"),
+    SymbolSpec("COIN"),
+    SymbolSpec("PLTR"),
+    SymbolSpec("BA"),
+    SymbolSpec("DIS"),
+    SymbolSpec("JPM"),
+    SymbolSpec("XOM"),
+    SymbolSpec("WMT"),
+    SymbolSpec("CRM"),
 )
 
 
