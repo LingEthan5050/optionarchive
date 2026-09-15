@@ -115,6 +115,12 @@ def run_snapshot(
             trading_calendar.WrongTimeForSession,
         ) as exc:
             log.info("Skipping: %s", exc)
+            # Ping success on a skip. launchd fires every day, so every day
+            # the healthcheck hears from a Mac that is awake and scheduling -
+            # weekends and holidays included, with no false alarms. Whether
+            # the calendar skipped a day it should not have is a coverage
+            # question, which verify and the dashboard answer, not this.
+            health.ping(settings.healthcheck_url, body=f"skipped: {exc}")
             return 0
         if trading_calendar.is_early_close(trade_date):
             log.info("Early close today; %s target is %s ET", session, f"{target:%H:%M}")
