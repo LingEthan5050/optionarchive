@@ -20,7 +20,7 @@ uv venv --python 3.14
 uv pip install -e ".[dev]"
 ```
 
-Commands below use the Windows interpreter path. On Linux substitute
+Commands below use the Windows interpreter path. On macOS and Linux substitute
 `.venv/bin/python` for `.venv/Scripts/python.exe`, or activate the venv and
 use the `archiver` console script directly.
 
@@ -87,7 +87,6 @@ Useful flags:
 | `--symbols SPY,QQQ` | Override the watchlist for an ad-hoc run. |
 | `--data-dir PATH` | Override `ARCHIVE_DATA_DIR`. |
 | `-v` | Debug logging, including retries and token refreshes. |
-
 | `--force` | Bypass the trading-day and session-time guards. |
 
 Other commands:
@@ -128,12 +127,21 @@ at 12:45 and 15:45: on a normal day the 12:45 firing is out of window and
 becomes a no-op, and on an early-close day the 15:45 firing is. Neither the
 plist nor the installer needs to know which days are which.
 
-Two things that will silently cost you snapshots:
+Four things that will silently cost you snapshots. The installer refuses the
+first and warns about the rest:
 
-- **A sleeping Mac misses runs.** `sudo pmset -a sleep 0 disablesleep 1`, and
-  enable "Start up automatically after a power failure" in Energy Saver.
+- **Privacy-protected folders.** macOS blocks background jobs from reading
+  `~/Desktop`, `~/Documents`, `~/Downloads` and iCloud Drive. A repo there works
+  perfectly when run by hand and fails every scheduled run with "Operation not
+  permitted". Clone into `~/optionarchive`.
+- **A sleeping Mac misses runs.** `sudo pmset -a sleep 0 autorestart 1` - the
+  second flag brings it back after a power failure.
+- **No auto-login, no runs.** These are LaunchAgents, which only run while a
+  user is logged in. After any restart nothing happens until someone logs in,
+  so enable automatic login. It is unavailable with FileVault on, in which case
+  the healthcheck is what tells you the Mac is sitting at the login screen.
 - **launchd uses local time.** The 09:45 / 15:45 targets are only correct if
-  the machine is on Eastern. The installer warns, but does not change it.
+  the machine is on Eastern.
 
 Logs land in `logs/` (gitignored). Check the agents with:
 

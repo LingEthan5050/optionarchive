@@ -20,9 +20,34 @@ echo "Repo:   $REPO"
 
 # -- preflight ----------------------------------------------------------
 
+# macOS privacy protection (TCC) blocks background processes from reading
+# Desktop, Documents, Downloads and iCloud Drive. Everything works when you
+# run it by hand in Terminal - which has been granted access - and then every
+# scheduled run dies with "Operation not permitted". Refuse rather than
+# install something that will fail silently at 09:45.
+case "$REPO" in
+    "$HOME/Desktop"*|"$HOME/Documents"*|"$HOME/Downloads"*|"$HOME/Library/Mobile Documents"*)
+        echo "ERROR: the repo is under a privacy-protected folder:" >&2
+        echo "         $REPO" >&2
+        echo "       launchd jobs cannot read it and every scheduled run would fail." >&2
+        echo "       Move it somewhere unprotected, e.g.:" >&2
+        echo "         mv \"$REPO\" ~/optionarchive" >&2
+        exit 1
+        ;;
+esac
+
 if [ ! -x "$PYTHON" ]; then
     echo "ERROR: $PYTHON not found. Create the venv first:" >&2
-    echo "  uv venv && uv pip install -e '.[dev,schedule]'" >&2
+    echo "  uv venv --python 3.14 && uv pip install -e '.[dev]'" >&2
+    exit 1
+fi
+
+# Import the whole CLI once, so a missing dependency fails here in front of
+# you rather than inside launchd at 09:45 where nobody is watching.
+if ! "$PYTHON" -c "import chain_archiver.cli" 2>/dev/null; then
+    echo "ERROR: chain_archiver does not import cleanly. Reinstall with:" >&2
+    echo "  uv pip install -e '.[dev]'" >&2
+    "$PYTHON" -c "import chain_archiver.cli" >&2 || true
     exit 1
 fi
 
@@ -37,7 +62,7 @@ echo "Locked: .env is now 0600"
 
 # launchd's StartCalendarInterval uses the machine's local timezone, so the
 # 09:45 / 15:45 targets are only correct if this Mac is on Eastern time.
-TZ_NAME="$(readlink /etc/localtime | sed 's|.*/zoneinfo/||')"
+TZ_NAME="$(readlink /etc/localtime 2>/dev/null | sed 's|.*/zoneinfo/||' || true)"
 if [ "$TZ_NAME" != "America/New_York" ]; then
     echo "WARNING: system timezone is '$TZ_NAME', not America/New_York." >&2
     echo "         launchd fires on local time, so the snapshot targets will" >&2
@@ -110,18 +135,36 @@ $(interval 15 45)"
 
 for label in "$AM_LABEL" "$PM_LABEL"; do
     launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
+    # bootout returns before launchd has finished unloading; bootstrapping
+    # straight after races it and fails with "Input/output error".
+    sleep 1
     launchctl bootstrap "gui/$(id -u)" "$AGENTS/$label.plist"
     echo "Loaded: $label"
 done
 
+# -- things this script will not change for you -------------------------
+
 echo
 echo "Installed. Verify with:"
 echo "  launchctl list | grep chainarchiver"
-echo
-echo "IMPORTANT: a sleeping Mac misses snapshots. Disable sleep with:"
-echo "  sudo pmset -a sleep 0 disablesleep 1"
-echo "and enable 'Start up automatically after a power failure' in"
-echo "System Settings > Energy Saver."
+
+if [ "$(pmset -g | awk '/^ *sleep /{print $2}')" != "0" ]; then
+    echo
+    echo "WARNING: this Mac is set to sleep, and a sleeping Mac misses snapshots."
+    echo "  sudo pmset -a sleep 0 autorestart 1"
+    echo "  (autorestart brings it back up after a power failure)"
+fi
+
+if [ -z "$(defaults read /Library/Preferences/com.apple.loginwindow autoLoginUser 2>/dev/null)" ]; then
+    echo
+    echo "WARNING: automatic login is off."
+    echo "  These are LaunchAgents: they run only while you are logged in. After a"
+    echo "  power cut or update restart, nothing runs until someone logs in."
+    echo "  Enable it in System Settings > Users & Groups > Automatically log in."
+    echo "  (Unavailable while FileVault is on - then the healthcheck is what"
+    echo "  tells you the Mac rebooted and is sitting at the login screen.)"
+fi
+
 echo
 echo "Test the wiring now without waiting for a trigger:"
 echo "  $PYTHON -m chain_archiver.cli snapshot --session pm --dry-run --force --symbols SPY"
