@@ -2,6 +2,7 @@
 # Install the archiver's launchd timers on macOS.
 #
 #   ./deploy/install-macos.sh
+#   ./deploy/install-macos.sh --force   # take over a schedule installed elsewhere
 #
 # Idempotent: re-run it after moving the repo or changing the Python path.
 # Uninstall with ./deploy/uninstall-macos.sh
@@ -16,9 +17,40 @@ LOGS="$REPO/logs"
 AM_LABEL="com.chainarchiver.am"
 PM_LABEL="com.chainarchiver.pm"
 
+FORCE=0
+for arg in "$@"; do
+    case "$arg" in
+        --force) FORCE=1 ;;
+        *) echo "usage: $0 [--force]" >&2; exit 2 ;;
+    esac
+done
+
 echo "Repo:   $REPO"
 
 # -- preflight ----------------------------------------------------------
+
+# A second checkout - a dev copy, a restore from backup - installs under the
+# same two labels as the live one. Without this check, running the installer
+# from it silently repoints the 09:45/12:45/15:45 schedule at the wrong tree:
+# no error, nothing in the output, and you find out when half-finished code
+# runs against the market instead of the code you deployed.
+for label in "$AM_LABEL" "$PM_LABEL"; do
+    plist="$AGENTS/$label.plist"
+    [ -f "$plist" ] || continue
+    installed="$(/usr/libexec/PlistBuddy -c 'Print :WorkingDirectory' "$plist" 2>/dev/null || true)"
+    [ -n "$installed" ] && [ "$installed" != "$REPO" ] || continue
+    if [ "$FORCE" -eq 1 ]; then
+        echo "WARNING: taking $label over from $installed (--force)."
+    else
+        echo "ERROR: $label is already installed from a different checkout:" >&2
+        echo "         installed: $installed" >&2
+        echo "         this one:  $REPO" >&2
+        echo "       Installing from here would repoint the live schedule at this" >&2
+        echo "       checkout. If that is really what you want:" >&2
+        echo "         $0 --force" >&2
+        exit 1
+    fi
+done
 
 # macOS privacy protection (TCC) blocks background processes from reading
 # Desktop, Documents, Downloads and iCloud Drive. Everything works when you
