@@ -16,6 +16,8 @@ LOGS="$REPO/logs"
 
 AM_LABEL="com.chainarchiver.am"
 PM_LABEL="com.chainarchiver.pm"
+DERIVE_LABEL="com.chainarchiver.derive"
+BACKUP_LABEL="com.chainarchiver.backup"
 
 FORCE=0
 for arg in "$@"; do
@@ -34,7 +36,7 @@ echo "Repo:   $REPO"
 # from it silently repoints the 09:45/12:45/15:45 schedule at the wrong tree:
 # no error, nothing in the output, and you find out when half-finished code
 # runs against the market instead of the code you deployed.
-for label in "$AM_LABEL" "$PM_LABEL"; do
+for label in "$AM_LABEL" "$PM_LABEL" "$DERIVE_LABEL" "$BACKUP_LABEL"; do
     plist="$AGENTS/$label.plist"
     [ -f "$plist" ] || continue
     installed="$(/usr/libexec/PlistBuddy -c 'Print :WorkingDirectory' "$plist" 2>/dev/null || true)"
@@ -113,8 +115,13 @@ mkdir -p "$AGENTS" "$LOGS"
 # 15:45 covers normal ones. The guard makes whichever is wrong a no-op, so
 # neither launchd nor this script needs to know the NYSE calendar.
 
+# Render CLI arguments as plist <string> elements.
+cli_args() {
+    for a in "$@"; do printf '        <string>%s</string>\n' "$a"; done
+}
+
 write_agent() {
-    local label="$1" session="$2" intervals="$3"
+    local label="$1" logname="$2" args="$3" intervals="$4"
     cat > "$AGENTS/$label.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
@@ -129,9 +136,7 @@ write_agent() {
         <string>$PYTHON</string>
         <string>-m</string>
         <string>chain_archiver.cli</string>
-        <string>snapshot</string>
-        <string>--session</string>
-        <string>$session</string>
+$args
     </array>
 
     <key>WorkingDirectory</key>
@@ -146,26 +151,108 @@ $intervals
     <false/>
 
     <key>StandardOutPath</key>
-    <string>$LOGS/$session.log</string>
+    <string>$LOGS/$logname.log</string>
     <key>StandardErrorPath</key>
-    <string>$LOGS/$session.log</string>
+    <string>$LOGS/$logname.log</string>
 </dict>
 </plist>
 PLIST
     echo "Wrote:  $AGENTS/$label.plist"
 }
 
+# The backup agent runs a shell script, not the CLI, and needs the remote in
+# its environment: launchd agents inherit nothing from your shell.
+write_backup_agent() {
+    local remote="$1"
+    cat > "$AGENTS/$BACKUP_LABEL.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>$BACKUP_LABEL</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>$REPO/deploy/backup.sh</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>ARCHIVE_REMOTE</key>
+        <string>$remote</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+
+    <key>WorkingDirectory</key>
+    <string>$REPO</string>
+
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict><key>Weekday</key><integer>0</integer><key>Hour</key><integer>19</integer><key>Minute</key><integer>0</integer></dict>
+    </array>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>$LOGS/backup.log</string>
+    <key>StandardErrorPath</key>
+    <string>$LOGS/backup.log</string>
+</dict>
+</plist>
+PLIST
+    echo "Wrote:  $AGENTS/$BACKUP_LABEL.plist"
+}
+
 interval() {
     printf '        <dict><key>Hour</key><integer>%s</integer><key>Minute</key><integer>%s</integer></dict>' "$1" "$2"
 }
 
-write_agent "$AM_LABEL" am "$(interval 9 45)"
-write_agent "$PM_LABEL" pm "$(interval 12 45)
+write_agent "$AM_LABEL" am "$(cli_args snapshot --session am)" "$(interval 9 45)"
+write_agent "$PM_LABEL" pm "$(cli_args snapshot --session pm)" "$(interval 12 45)
 $(interval 15 45)"
+
+# Greeks, once after each capture rather than once nightly. `derive` with no
+# --date takes only the single latest (date, session) partition (cli.py
+# run_derive), so a single evening run would derive the pm snapshot and leave
+# every am snapshot without greeks forever. Running after each capture also
+# means the derived layer is queryable within minutes instead of at day end.
+# On a non-trading day this re-derives the most recent partition: a few
+# seconds of CPU writing a file identical to the one already there.
+write_agent "$DERIVE_LABEL" derive "$(cli_args derive)" "$(interval 10 5)
+$(interval 16 5)"
 
 # -- load ---------------------------------------------------------------
 
-for label in "$AM_LABEL" "$PM_LABEL"; do
+# Sunday 19:00. Installed only when a remote exists: an agent that fails
+# every week trains you to ignore the log it fails into. ARCHIVE_REMOTE comes
+# from the environment or .env, whichever is set.
+# `|| true`: preflight guarantees .env exists today, but under `set -e` a
+# missing file here would kill the install at the last step instead of
+# quietly meaning "no remote configured".
+ARCHIVE_REMOTE="${ARCHIVE_REMOTE:-$(sed -n 's/^ARCHIVE_REMOTE=//p' "$REPO/.env" 2>/dev/null | tr -d '"' | head -1 || true)}"
+LABELS="$AM_LABEL $PM_LABEL $DERIVE_LABEL"
+if [ -n "$ARCHIVE_REMOTE" ]; then
+    if command -v rclone >/dev/null; then
+        write_backup_agent "$ARCHIVE_REMOTE"
+        LABELS="$LABELS $BACKUP_LABEL"
+    else
+        echo "WARNING: ARCHIVE_REMOTE is set but rclone is missing; skipping the"
+        echo "         backup agent. Install it with: brew install rclone"
+    fi
+else
+    echo
+    echo "NOTE: ARCHIVE_REMOTE is unset, so no backup is scheduled. The archive"
+    echo "      cannot be backfilled - a lost day is lost permanently. Set up a"
+    echo "      remote with 'rclone config', add ARCHIVE_REMOTE to .env, and"
+    echo "      re-run this script."
+fi
+
+for label in $LABELS; do
     launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
     # bootout returns before launchd has finished unloading; bootstrapping
     # straight after races it and fails with "Input/output error".
