@@ -91,6 +91,13 @@ class Trade:
         paid, worth = -credit, -close
         return "debit", (worth - paid) / paid
 
+    def open_pnl(self, mids: dict[str, float]) -> float | None:
+        """Dollars gained or lost since entry, at live mids."""
+        if any(p.symbol not in mids or p.average_open_price is None for p in self.legs):
+            return None
+        return sum((mids[p.symbol] - p.average_open_price) * p.quantity * p.multiplier
+                   for p in self.legs)
+
     def day_change(self, mids: dict[str, float], today: date) -> float | None:
         """Dollars gained or lost since the previous close (or since entry,
         for a leg opened today). None if any leg lacks a price, so a partial

@@ -166,7 +166,8 @@ class AccountBot(discord.Client):
         @self.tree.command(description="Open trades with profit %, days left and entry prices")
         async def positions(interaction: discord.Interaction) -> None:
             async def build():
-                return cards.positions_cards(await self.snapshot(), notes=self.journal,
+                return cards.positions_cards(await self.snapshot(balances=True, prior=True),
+                                             notes=self.journal,
                                              soon=max(self.dte_alerts),
                                              manage=min(self.dte_alerts))
             await self.reply(interaction, build)

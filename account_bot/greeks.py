@@ -58,7 +58,14 @@ def years_to_expiry(expires: date, now: datetime) -> float:
     return max((close - now).total_seconds(), 0.0) / SECONDS_PER_YEAR
 
 
-def leg(p: Position, snap: Snapshot, now: datetime) -> Exposure | None:
+def dividend_yield(snap: Snapshot, symbol: str) -> float:
+    spot = snap.spots.get(symbol)
+    dividend = snap.metric(symbol, "dividend-rate-per-share")
+    return dividend / spot if dividend and spot else 0.0
+
+
+def leg_iv(p: Position, snap: Snapshot, now: datetime) -> float | None:
+    """The leg's implied volatility, solved from its live mid."""
     if p.underlying in NOT_MODELLED:
         return None
     spot = snap.spots.get(p.underlying)
@@ -66,13 +73,28 @@ def leg(p: Position, snap: Snapshot, now: datetime) -> Exposure | None:
     t = years_to_expiry(p.expires, now)
     if not spot or mid is None or t <= 0 or not p.strike:
         return None
-    dividend = snap.metric(p.underlying, "dividend-rate-per-share")
-    q = dividend / spot if dividend else 0.0
-    is_call = p.option_type == "C"
-    vol = implied_vol(mid, spot, p.strike, t, snap.rate, q, is_call)
+    return implied_vol(mid, spot, p.strike, t, snap.rate,
+                       dividend_yield(snap, p.underlying), p.option_type == "C")
+
+
+def trade_iv(t: Trade, snap: Snapshot, now: datetime) -> float | None:
+    """The trade's volatility for probability and expected-move estimates:
+    the mean of its legs' solved IVs, else the underlying's IV index."""
+    solved = [v for v in (leg_iv(p, snap, now) for p in t.legs) if v is not None]
+    if solved:
+        return sum(solved) / len(solved)
+    return snap.metric(t.underlying, "implied-volatility-index")
+
+
+def leg(p: Position, snap: Snapshot, now: datetime) -> Exposure | None:
+    vol = leg_iv(p, snap, now)
     if vol is None:
         return None
-    g = black_scholes(spot, p.strike, t, snap.rate, q, vol, is_call)
+    spot = snap.spots[p.underlying]
+    t = years_to_expiry(p.expires, now)
+    is_call = p.option_type == "C"
+    g = black_scholes(spot, p.strike, t, snap.rate, dividend_yield(snap, p.underlying),
+                      vol, is_call)
     size = p.quantity * p.multiplier  # signed: short legs flip both greeks
     return Exposure(delta=g.delta * size, theta=g.theta * size)
 

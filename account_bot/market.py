@@ -38,6 +38,8 @@ class Snapshot:
     rate: float = greeks_math.DEFAULT_RISK_FREE_RATE
     balances: list = field(default_factory=list)
     prior_net_liq: dict[str, float] = field(default_factory=dict)
+    #: Previous session's close for each underlying, for today's change.
+    prev_close: dict[str, float] = field(default_factory=dict)
     #: The archiver's data directory, for history lookups (IV rank at entry).
     archive: Path | None = None
 
@@ -62,7 +64,9 @@ def _mid(quote: dict) -> float | None:
             return None
 
 
-def _quote_many(client: TastytradeClient, kind: str, symbols: list[str]) -> dict[str, float]:
+def _quote_many(client: TastytradeClient, kind: str, symbols: list[str],
+                prev: dict[str, float]) -> dict[str, float]:
+    """Mid for each symbol; each one's previous close goes into `prev`."""
     if not symbols:
         return {}
     data = client.get("/market-data/by-type", params={kind: ",".join(symbols)})
@@ -71,6 +75,10 @@ def _quote_many(client: TastytradeClient, kind: str, symbols: list[str]) -> dict
         price = _mid(item)
         if item.get("symbol") and price is not None:
             found[item["symbol"]] = price
+        try:
+            prev[item["symbol"]] = float(item["prev-close"])
+        except (KeyError, TypeError, ValueError):
+            pass
     return found
 
 
@@ -89,8 +97,9 @@ def gather(client: TastytradeClient, *, balances: bool = False,
 
     underlyings = {p.underlying for p in held} | {BENCHMARK}
     stocks = sorted(u for u in underlyings if u not in INDEXES)
-    snap.spots.update(_quote_many(client, "equity", stocks))
-    snap.spots.update(_quote_many(client, "index", sorted(underlyings & INDEXES)))
+    snap.spots.update(_quote_many(client, "equity", stocks, snap.prev_close))
+    snap.spots.update(_quote_many(client, "index", sorted(underlyings & INDEXES),
+                                  snap.prev_close))
     # A share position's mid is its underlying's price.
     for p in held:
         if not p.is_option and p.symbol in snap.spots:
