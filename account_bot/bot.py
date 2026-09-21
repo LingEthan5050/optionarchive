@@ -11,6 +11,9 @@ chat - and the bot answers one Discord user, DISCORD_OWNER_ID, and nobody
 else. The only thing it ever posts is the reminder, which carries no money
 figures (see messages.py for the two tiers).
 
+Rule-of-thumb alerts (rules.py) are checked four times per trading day and
+DM'd once each: 28 and 21 DTE, and 50% of max profit on short premium.
+
 The reminder goes out once per NYSE trading day at REMINDER_TIME Eastern
 (default 16:30: after the close, and after the 16:05 greeks run), and only
 when there is at least one option position to remind you about.
@@ -30,19 +33,27 @@ import discord
 from discord import app_commands
 from discord.ext import tasks
 
-from account_bot import account, messages
+from account_bot import account, messages, rules
 from chain_archiver import calendar as trading_calendar
 from chain_archiver.auth import TastytradeClient
 from chain_archiver.config import Settings
+from chain_archiver.fetch import fetch_option_quotes
 
 log = logging.getLogger("account_bot")
 
 DEFAULT_REMINDER = time(16, 30)
 
+#: When the rule-of-thumb alerts are checked, Eastern. Inside market hours so
+#: an alert arrives while you can still act on it; the first check leaves the
+#: open's wide spreads fifteen minutes to settle before quotes are trusted.
+ALERT_CHECKS = (time(9, 45), time(12, 0), time(14, 0), time(15, 30))
+
 
 class AccountBot(discord.Client):
     def __init__(self, settings: Settings, owner_id: int, guild_id: int | None,
-                 reminder_at: time) -> None:
+                 reminder_at: time,
+                 dte_alerts: tuple[int, ...] = rules.DEFAULT_DTE_ALERTS,
+                 profit_target: float = rules.DEFAULT_PROFIT_TARGET) -> None:
         # Guilds only. Slash commands arrive as interactions, and discord.py
         # needs the (unprivileged) guilds intent to keep its state straight;
         # the bot has no reason to see messages, members or presence.
@@ -54,6 +65,9 @@ class AccountBot(discord.Client):
         self.guild_id = guild_id
         self.reminder_at = reminder_at.replace(tzinfo=account.EASTERN)
         self.tree = app_commands.CommandTree(self)
+        self.dte_alerts = dte_alerts
+        self.profit_target = profit_target
+        self.alert_log = rules.AlertLog(settings.data_dir / "bot" / "alerts.json")
 
     # -- tastytrade, off the event loop -----------------------------------
 
@@ -67,6 +81,26 @@ class AccountBot(discord.Client):
                 return account.positions(client, accts)
             finally:
                 client.close()
+        return await asyncio.to_thread(work)
+
+    async def fetch_with_mids(self) -> tuple[list, dict[str, float]]:
+        def work():
+            client = TastytradeClient(self.settings)
+            try:
+                held = account.positions(client, account.accounts(client))
+                symbols = [p.symbol for p in held if p.is_option]
+                quotes = fetch_option_quotes(client, symbols) if symbols else {}
+            finally:
+                client.close()
+            mids = {}
+            for symbol, q in quotes.items():
+                try:
+                    mid = float(q["mid"]) if q.get("mid") not in (None, "") else (
+                        (float(q["bid"]) + float(q["ask"])) / 2)
+                except (KeyError, TypeError, ValueError):
+                    continue
+                mids[symbol] = mid
+            return held, mids
         return await asyncio.to_thread(work)
 
     # -- replies ----------------------------------------------------------
@@ -127,6 +161,11 @@ class AccountBot(discord.Client):
         self.daily.before_loop(self.wait_until_ready)
         self.daily.start()
 
+        checks = [c.replace(tzinfo=account.EASTERN) for c in ALERT_CHECKS]
+        self.alerts = tasks.loop(time=checks)(self.check_alerts)
+        self.alerts.before_loop(self.wait_until_ready)
+        self.alerts.start()
+
     async def on_ready(self) -> None:
         log.info("Connected as %s; reminder at %s ET", self.user,
                  self.reminder_at.strftime("%H:%M"))
@@ -144,16 +183,46 @@ class AccountBot(discord.Client):
         if text is None:
             log.info("Reminder: no option positions, nothing sent")
             return
+        if await self.dm_owner(text):
+            log.info("Reminder sent: %d option position(s)",
+                     sum(p.is_option for p in held))
+
+
+    async def dm_owner(self, text: str) -> bool:
         try:
             owner = self.get_user(self.owner_id) or await self.fetch_user(self.owner_id)
             for part in messages.chunk(text):
                 await owner.send(part)
-            log.info("Reminder sent: %d option position(s)",
-                     sum(p.is_option for p in held))
+            return True
         except discord.HTTPException:
             # Usually: you and the bot share no server, or DMs from server
             # members are switched off in your privacy settings.
-            log.exception("Reminder: could not DM the owner")
+            log.exception("Could not DM the owner")
+            return False
+
+    async def check_alerts(self) -> None:
+        """Rule-of-thumb alerts: 28/21 DTE and 50% of max profit."""
+        today = account.today_eastern()
+        if not trading_calendar.is_trading_day(today):
+            return
+        try:
+            held, mids = await self.fetch_with_mids()
+        except Exception:  # noqa: BLE001
+            log.exception("Alerts: could not fetch positions")
+            return
+        trades = rules.group_trades(held)
+        due = rules.evaluate(trades, mids, today, self.dte_alerts, self.profit_target)
+        new = self.alert_log.new(due)
+        loud = [a for a in new if a.text]
+        if loud:
+            body = "\n".join(a.text for a in loud)
+            body += "\n-# A rule-of-thumb reminder, not a recommendation."
+            if not await self.dm_owner(body):
+                return  # not recorded, so the next check tries again
+        # Record even when nothing was loud: silent keys and pruning of
+        # closed trades still need saving.
+        self.alert_log.record(new, trades)
+        log.info("Alerts: %d trade(s) checked, %d alert(s) sent", len(trades), len(loud))
 
 
 def _reminder_time() -> time:
@@ -181,7 +250,11 @@ def main() -> int:
                   "(see .env.example).")
         return 1
 
+    dte = tuple(int(x) for x in os.environ.get("ALERT_DTE", "").split(",") if x.strip()) \
+        or rules.DEFAULT_DTE_ALERTS
+    target = float(os.environ.get("PROFIT_TARGET") or rules.DEFAULT_PROFIT_TARGET)
+
     bot = AccountBot(settings, int(owner), int(guild) if guild.isdigit() else None,
-                     _reminder_time())
+                     _reminder_time(), dte, target)
     bot.run(token, log_handler=None)
     return 0

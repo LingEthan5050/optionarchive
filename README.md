@@ -345,7 +345,20 @@ session on your phone.
 ```
 
 Plus a DM each NYSE trading day at 16:30 ET listing option positions by days
-left, flagged at 7 and 3 days. It reuses the archiver's `read`-scope
+left, flagged at 7 and 3 days, and rule-of-thumb alerts checked at 09:45,
+12:00, 14:00 and 15:30 ET, each sent once per trade:
+
+- **28 DTE** - a week's notice before the management point.
+- **21 DTE** - tastytrade's guideline to manage (close or roll) rather than
+  hold into expiration weeks, where gamma risk rises sharply.
+- **50% of max profit** on short-premium (credit) trades - tastytrade's
+  take-profit guideline. Debit trades have no equally standard rule, so they
+  get the DTE alerts only.
+
+Option legs are grouped into trades by account and underlying, so a condor
+is judged as one trade rather than four legs. Change the thresholds with
+`ALERT_DTE` and `PROFIT_TARGET` in `.env`. These are reminders of a
+published rule of thumb, not recommendations. It reuses the archiver's `read`-scope
 credential, so it can see the account but cannot trade, move money or change
 anything.
 
