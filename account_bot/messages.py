@@ -23,7 +23,7 @@ from datetime import date, datetime
 
 from account_bot.account import EASTERN, Balance, Position
 from account_bot.earnings import affects, from_metrics
-from account_bot import greeks
+from account_bot import greeks, history
 from account_bot.market import Snapshot
 from account_bot.rules import group_trades
 
@@ -156,6 +156,24 @@ def _earnings_mark(trade, upcoming: dict | None) -> str:
     return f" · 📅 earnings {e.date:%b %d}" if e else ""
 
 
+def _ivr_text(trade, snap: Snapshot) -> str | None:
+    """"IVR 28% (entry 41%)". IV rank arrives as a decimal (0.28 = 28%) - the
+    scale trap the archive's schema warns about."""
+    now = snap.metric(trade.underlying, "implied-volatility-index-rank")
+    if now is None:
+        return None
+    text = f"IVR {now:.0%}"
+    opened = min((p.opened_on for p in trade.legs if p.opened_on), default=None)
+    found = history.ivr_on(snap.archive, trade.underlying, opened) if (
+        snap.archive and opened) else None
+    if found:
+        value, on = found
+        text += f" (entry {value:.0%}" + (f", as of {on:%b %d}" if on != opened else "") + ")"
+    else:
+        text += " (entry n/a)"
+    return text
+
+
 def positions_detail(snap: Snapshot, now: datetime | None = None) -> str:
     """EPHEMERAL only: every trade with its profit, legs and entry prices.
 
@@ -183,9 +201,15 @@ def positions_detail(snap: Snapshot, now: datetime | None = None) -> str:
             profit = f" · {_pct(*result)}" if result else " · profit —"
             lines.append(f"{_flag(days)} {trade.describe()} — {_when(days)}{profit}"
                          f"{_earnings_mark(trade, upcoming)}")
+            detail = []
             exposure = greeks.trade(trade, snap, now)
             if exposure is not None:
-                lines.append(f"  Δ {exposure.delta:+.0f} sh · Θ {_signed_money(exposure.theta)}/day")
+                detail.append(f"Δ {exposure.delta:+.0f} sh · Θ {_signed_money(exposure.theta)}/day")
+            ivr = _ivr_text(trade, snap)
+            if ivr:
+                detail.append(ivr)
+            if detail:
+                lines.append("  " + " · ".join(detail))
             for leg in sorted(trade.legs, key=lambda p: (p.option_type != "P", p.strike or 0)):
                 side = "short" if leg.quantity < 0 else "long"
                 entry = (f" · opened {leg.average_open_price:,.2f}"
@@ -207,7 +231,9 @@ def positions_detail(snap: Snapshot, now: datetime | None = None) -> str:
         lines.append("")
     lines.append("-# Credit trades: share of max profit. Debit trades and stock: "
                  "return on cost. Δ in shares of the underlying; β-weighted Δ as "
-                 "SPY shares. Θ: dollars per day from time decay. Live mids.")
+                 "SPY shares. Θ: dollars per day from time decay. IVR at entry "
+                 "comes from the archive, where it covers the symbol and date. "
+                 "Live mids.")
     return "\n".join(lines).rstrip()
 
 

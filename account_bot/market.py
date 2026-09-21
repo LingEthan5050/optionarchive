@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date
+from pathlib import Path
 
 from account_bot import account
 from chain_archiver import derive as greeks_math
@@ -37,6 +38,8 @@ class Snapshot:
     rate: float = greeks_math.DEFAULT_RISK_FREE_RATE
     balances: list = field(default_factory=list)
     prior_net_liq: dict[str, float] = field(default_factory=dict)
+    #: The archiver's data directory, for history lookups (IV rank at entry).
+    archive: Path | None = None
 
     def metric(self, symbol: str, key: str) -> float | None:
         value = self.metrics.get(symbol, {}).get(key)

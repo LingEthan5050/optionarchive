@@ -105,7 +105,9 @@ class AccountBot(discord.Client):
             client = TastytradeClient(self.settings)
             try:
                 day = _previous_trading_day(account.today_eastern()) if prior else None
-                return market.gather(client, balances=balances, prior_day=day)
+                snap = market.gather(client, balances=balances, prior_day=day)
+                snap.archive = self.settings.data_dir
+                return snap
             finally:
                 client.close()
         return await asyncio.to_thread(work)
