@@ -5,11 +5,14 @@
   /positions   every open trade with profit %, days left and entry prices
   /balance     net liq, cash and buying power per account, and the total
   /expiring    the daily reminder, on demand
+  /alerttest   post a test message where alerts go
 
 Every command reply is EPHEMERAL - only you see it and it is not saved to the
 chat - and the bot answers one Discord user, DISCORD_OWNER_ID, and nobody
-else. The only thing it ever posts is the reminder, which carries no money
-figures (see messages.py for the two tiers).
+else. What it posts unprompted - the reminder and the alerts - goes to the
+ALERT_CHANNEL text channel (default #options), falling back to a DM if that
+channel is missing, and carries no money figures (see messages.py). Anyone
+who can read that channel can read those posts.
 
 Rule-of-thumb alerts (rules.py) are checked four times per trading day and
 DM'd once each: 28 and 21 DTE, and 50% of max profit on short premium.
@@ -53,7 +56,8 @@ class AccountBot(discord.Client):
     def __init__(self, settings: Settings, owner_id: int, guild_id: int | None,
                  reminder_at: time,
                  dte_alerts: tuple[int, ...] = rules.DEFAULT_DTE_ALERTS,
-                 profit_target: float = rules.DEFAULT_PROFIT_TARGET) -> None:
+                 profit_target: float = rules.DEFAULT_PROFIT_TARGET,
+                 alert_channel: str = "options") -> None:
         # Guilds only. Slash commands arrive as interactions, and discord.py
         # needs the (unprivileged) guilds intent to keep its state straight;
         # the bot has no reason to see messages, members or presence.
@@ -67,6 +71,7 @@ class AccountBot(discord.Client):
         self.tree = app_commands.CommandTree(self)
         self.dte_alerts = dte_alerts
         self.profit_target = profit_target
+        self.alert_channel = alert_channel
         self.alert_log = rules.AlertLog(settings.data_dir / "bot" / "alerts.json")
 
     # -- tastytrade, off the event loop -----------------------------------
@@ -156,6 +161,18 @@ class AccountBot(discord.Client):
                         or "No open option positions.")
             await self.reply(interaction, build)
 
+        @self.tree.command(description="Post a test message where alerts go")
+        async def alerttest(interaction: discord.Interaction) -> None:
+            async def build():
+                channel = self.find_alert_channel()
+                sent = await self.post("🔔 Test: rule-of-thumb alerts and the "
+                                       "daily summary will appear here.")
+                if not sent:
+                    return "Couldn't post the test anywhere - check bot.log."
+                return (f"Posted in {channel.mention}." if channel else
+                        f"No #{self.alert_channel} channel found, so it went to your DMs.")
+            await self.reply(interaction, build)
+
         # A guild sync is instant; a global one can take up to an hour to
         # appear, which looks exactly like the bot being broken.
         if self.guild_id:
@@ -177,6 +194,11 @@ class AccountBot(discord.Client):
     async def on_ready(self) -> None:
         log.info("Connected as %s; reminder at %s ET", self.user,
                  self.reminder_at.strftime("%H:%M"))
+        if self.find_alert_channel():
+            log.info("Alerts and reminders post in #%s", self.alert_channel)
+        else:
+            log.warning("No #%s channel found; alerts will be DM'd instead",
+                        self.alert_channel)
 
     async def send_reminder(self) -> None:
         today = account.today_eastern()
@@ -191,7 +213,7 @@ class AccountBot(discord.Client):
         if text is None:
             log.info("Reminder: no option positions, nothing sent")
             return
-        if await self.dm_owner(text):
+        if await self.post(text):
             log.info("Reminder sent: %d option position(s)",
                      sum(p.is_option for p in held))
 
@@ -207,6 +229,30 @@ class AccountBot(discord.Client):
             # members are switched off in your privacy settings.
             log.exception("Could not DM the owner")
             return False
+
+    def find_alert_channel(self) -> discord.TextChannel | None:
+        guild = self.get_guild(self.guild_id) if self.guild_id else None
+        if guild is None:
+            return None
+        return discord.utils.get(guild.text_channels, name=self.alert_channel)
+
+    async def post(self, text: str) -> bool:
+        """Post an automated message to the alert channel, or DM the owner if
+        the channel is missing or refuses the bot. An alert that silently
+        goes nowhere is worse than one that arrives somewhere unexpected."""
+        channel = self.find_alert_channel()
+        if channel is not None:
+            try:
+                for part in messages.chunk(text):
+                    await channel.send(part)
+                return True
+            except discord.HTTPException:
+                log.exception("Could not post in #%s; falling back to DM",
+                              self.alert_channel)
+        else:
+            log.warning("No #%s channel in the server; falling back to DM",
+                        self.alert_channel)
+        return await self.dm_owner(text)
 
     async def check_alerts(self) -> None:
         """Rule-of-thumb alerts: 28/21 DTE and 50% of max profit."""
@@ -225,7 +271,7 @@ class AccountBot(discord.Client):
         if loud:
             body = "\n".join(a.text for a in loud)
             body += "\n-# A rule-of-thumb reminder, not a recommendation."
-            if not await self.dm_owner(body):
+            if not await self.post(body):
                 return  # not recorded, so the next check tries again
         # Record even when nothing was loud: silent keys and pruning of
         # closed trades still need saving.
@@ -262,7 +308,9 @@ def main() -> int:
         or rules.DEFAULT_DTE_ALERTS
     target = float(os.environ.get("PROFIT_TARGET") or rules.DEFAULT_PROFIT_TARGET)
 
+    channel = os.environ.get("ALERT_CHANNEL", "").strip().lstrip("#") or "options"
+
     bot = AccountBot(settings, int(owner), int(guild) if guild.isdigit() else None,
-                     _reminder_time(), dte, target)
+                     _reminder_time(), dte, target, channel)
     bot.run(token, log_handler=None)
     return 0

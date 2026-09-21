@@ -3,9 +3,11 @@
 Two tiers, because Discord keeps message history indefinitely and does not
 encrypt it end to end.
 
-  * reminder()  is POSTED - it lands in your DMs and stays there. It carries
-    the minimum that makes it useful: symbol, expiration, side, days left. No
-    dollar amounts, no prices, no account numbers.
+  * reminder() and the rule alerts are POSTED - to the alert channel
+    (#options by default), where they stay, readable by anyone who can see
+    that channel. They carry the minimum that makes them useful: symbol,
+    strikes, expiration, side, days left, and for a take-profit alert the
+    share of max profit. No dollar amounts, no prices, no account numbers.
   * positions_detail() and balance() are only ever sent as EPHEMERAL replies
     to a slash command: visible to you alone, not written to channel history,
     gone when you dismiss them. Money figures live only here.

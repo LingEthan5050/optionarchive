@@ -342,10 +342,12 @@ session on your phone.
 /positions   every open position with days left and entry prices
 /balance     net liq, cash and buying power per account, and the total
 /expiring    options sorted by days to expiration
+/alerttest   post a test message where alerts go
 ```
 
-Plus a DM each NYSE trading day at 16:30 ET listing option positions by days
-left, flagged at 7 and 3 days, and rule-of-thumb alerts checked at 09:45,
+Plus, posted in the `#options` channel (`ALERT_CHANNEL`; a DM if that channel
+is missing), a summary each NYSE trading day at 16:30 ET listing option
+positions by days left, flagged at 7 and 3 days, and rule-of-thumb alerts checked at 09:45,
 12:00, 14:00 and 15:30 ET, each sent once per trade:
 
 - **28 DTE** - a week's notice before the management point.
@@ -368,8 +370,11 @@ there as possible:
 
 - Command replies are *ephemeral* - only you see them and they are not saved
   to the chat. Money figures appear only here.
-- The daily DM is the one thing saved to history, and it carries symbol,
-  expiration, side and days left - no prices, balances or account numbers.
+- The summary and alerts are the only things saved to history. They carry
+  symbol, strikes, expiration, side, days left and, on a take-profit alert,
+  the share of max profit - no prices, balances or account numbers. They are
+  readable by everyone who can see `#options`, so make that channel private
+  if anyone else is in the server.
 - The bot answers one Discord user, `DISCORD_OWNER_ID`, and refuses everyone
   else before fetching anything.
 
