@@ -22,7 +22,8 @@ from collections import defaultdict
 from datetime import date
 
 from account_bot.account import Balance, Position
-from account_bot.earnings import affects
+from account_bot.earnings import affects, from_metrics
+from account_bot.market import Snapshot
 from account_bot.rules import group_trades
 
 #: Discord rejects messages over 2000 characters.
@@ -71,16 +72,11 @@ def _signed_money(value: float) -> str:
 
 
 def summary(
-    positions: list[Position],
-    mids: dict[str, float],
-    balances: list[Balance],
-    prior_net_liq: dict[str, float],
-    today: date,
+    snap: Snapshot,
     stamp: str,
     dollars: bool,
     soon: int = SOON,
     manage: int = MANAGE,
-    upcoming: dict | None = None,
 ) -> str:
     """The twice-daily summary: day P/L, then each option trade.
 
@@ -92,6 +88,9 @@ def summary(
     dollars=False (the posted default) shows percentages only. The ephemeral
     /expiring reply passes True.
     """
+    positions, mids, today = snap.positions, snap.mids, snap.today
+    balances, prior_net_liq = snap.balances, snap.prior_net_liq
+    upcoming = from_metrics(snap.metrics, today)
     lines = [f"**Options summary — {today:%a %b %d} · {stamp}**"]
 
     now = {b.account: b.net_liquidating_value for b in balances
@@ -140,9 +139,7 @@ def _earnings_mark(trade, upcoming: dict | None) -> str:
     return f" · 📅 earnings {e.date:%b %d}" if e else ""
 
 
-def positions_detail(positions: list[Position], today: date,
-                     mids: dict[str, float] | None = None,
-                     upcoming: dict | None = None) -> str:
+def positions_detail(snap: Snapshot) -> str:
     """EPHEMERAL only: every trade with its profit, legs and entry prices.
 
     Option legs are grouped into trades (rules.group_trades), because profit
@@ -151,7 +148,8 @@ def positions_detail(positions: list[Position], today: date,
     and a debit trade shows its return on what was paid. The two are not the
     same scale: the first tops out at 100%, the second has no ceiling.
     """
-    mids = mids or {}
+    positions, mids, today = snap.positions, snap.mids, snap.today
+    upcoming = from_metrics(snap.metrics, today)
     if not positions:
         return "No open positions."
     by_account: dict[str, list[Position]] = defaultdict(list)

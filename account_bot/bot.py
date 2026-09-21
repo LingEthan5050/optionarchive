@@ -40,11 +40,10 @@ import discord
 from discord import app_commands
 from discord.ext import tasks
 
-from account_bot import account, earnings, messages, rules
+from account_bot import account, earnings, market, messages, rules
 from chain_archiver import calendar as trading_calendar
 from chain_archiver.auth import TastytradeClient
 from chain_archiver.config import Settings
-from chain_archiver.fetch import fetch_option_quotes
 
 log = logging.getLogger("account_bot")
 
@@ -97,46 +96,21 @@ class AccountBot(discord.Client):
                 client.close()
         return await asyncio.to_thread(work)
 
-    async def fetch_with_mids(self) -> tuple[list, dict[str, float], dict]:
-        """Positions, live mids, and upcoming earnings for what is held."""
+    async def snapshot(self, *, balances: bool = False,
+                       prior: bool = False) -> market.Snapshot:
+        """Positions plus live market data, in one session (market.gather)."""
         def work():
             client = TastytradeClient(self.settings)
             try:
-                held = account.positions(client, account.accounts(client))
-                upcoming = earnings.fetch(client, {p.underlying for p in held},
-                                          account.today_eastern())
-                return held, _mids(client, held), upcoming
+                day = _previous_trading_day(account.today_eastern()) if prior else None
+                return market.gather(client, balances=balances, prior_day=day)
             finally:
                 client.close()
         return await asyncio.to_thread(work)
 
-    async def fetch_summary(self) -> dict:
-        """Everything the summary needs, in one authenticated session."""
-        def work():
-            client = TastytradeClient(self.settings)
-            try:
-                accts = account.accounts(client)
-                held = account.positions(client, accts)
-                return {
-                    "positions": held,
-                    "mids": _mids(client, held),
-                    "earnings": earnings.fetch(client, {p.underlying for p in held},
-                                               account.today_eastern()),
-                    "balances": account.balances(client, accts),
-                    "prior": account.prior_net_liq(
-                        client, accts, _previous_trading_day(account.today_eastern())),
-                }
-            finally:
-                client.close()
-        return await asyncio.to_thread(work)
-
-    def render_summary(self, data: dict, stamp: str, dollars: bool) -> str:
-        return messages.summary(
-            data["positions"], data["mids"], data["balances"], data["prior"],
-            account.today_eastern(), stamp, dollars,
-            soon=max(self.dte_alerts), manage=min(self.dte_alerts),
-            upcoming=data["earnings"],
-        )
+    def render_summary(self, snap: market.Snapshot, stamp: str, dollars: bool) -> str:
+        return messages.summary(snap, stamp, dollars,
+                                soon=max(self.dte_alerts), manage=min(self.dte_alerts))
 
     # -- replies ----------------------------------------------------------
 
@@ -165,9 +139,7 @@ class AccountBot(discord.Client):
         @self.tree.command(description="Open trades with profit %, days left and entry prices")
         async def positions(interaction: discord.Interaction) -> None:
             async def build():
-                held, mids, upcoming = await self.fetch_with_mids()
-                return messages.positions_detail(held, account.today_eastern(),
-                                                 mids, upcoming)
+                return messages.positions_detail(await self.snapshot())
             await self.reply(interaction, build)
 
         @self.tree.command(description="Balances and buying power (only you see this)")
@@ -179,9 +151,9 @@ class AccountBot(discord.Client):
         @self.tree.command(description="Summary now: day P/L and options by days left")
         async def expiring(interaction: discord.Interaction) -> None:
             async def build():
-                data = await self.fetch_summary()
+                snap = await self.snapshot(balances=True, prior=True)
                 now = datetime.now(account.EASTERN)
-                return self.render_summary(data, f"{now:%H:%M} ET", dollars=True)
+                return self.render_summary(snap, f"{now:%H:%M} ET", dollars=True)
             await self.reply(interaction, build)
 
         @self.tree.command(description="Post a test message where alerts go")
@@ -229,15 +201,15 @@ class AccountBot(discord.Client):
         if not trading_calendar.is_trading_day(today):
             return
         try:
-            data = await self.fetch_summary()
+            snap = await self.snapshot(balances=True, prior=True)
         except Exception:  # noqa: BLE001
             log.exception("Summary: could not fetch account data")
             return
         now = datetime.now(account.EASTERN)
         stamp = f"{now:%H:%M} ET" + (" · close" if now.hour >= 16 else "")
-        if await self.post(self.render_summary(data, stamp, self.summary_dollars)):
+        if await self.post(self.render_summary(snap, stamp, self.summary_dollars)):
             log.info("Summary sent: %d option trade(s)",
-                     len(rules.group_trades(data["positions"])))
+                     len(rules.group_trades(snap.positions)))
 
     async def dm_owner(self, text: str) -> bool:
         try:
@@ -282,10 +254,12 @@ class AccountBot(discord.Client):
         if not trading_calendar.is_trading_day(today):
             return
         try:
-            held, mids, upcoming = await self.fetch_with_mids()
+            snap = await self.snapshot()
         except Exception:  # noqa: BLE001
             log.exception("Alerts: could not fetch positions")
             return
+        held, mids = snap.positions, snap.mids
+        upcoming = earnings.from_metrics(snap.metrics, today)
         trades = rules.group_trades(held)
         stocks = [p for p in held if not p.is_option]
         due = rules.evaluate(trades, mids, today, self.dte_alerts, self.profit_target)
@@ -302,26 +276,6 @@ class AccountBot(discord.Client):
         self.alert_log.record(new, {t.key for t in trades}
                               | {earnings.stock_key(p) for p in stocks})
         log.info("Alerts: %d trade(s) checked, %d alert(s) sent", len(trades), len(loud))
-
-
-def _mids(client: TastytradeClient, held: list) -> dict[str, float]:
-    """Live mid prices for every option and stock position held."""
-    symbols = [p.symbol for p in held if p.is_option]
-    quotes = fetch_option_quotes(client, symbols) if symbols else {}
-    stocks = sorted({p.symbol for p in held if p.instrument_type == "Equity"})
-    if stocks:
-        data = client.get("/market-data/by-type", params={"equity": ",".join(stocks)})
-        for item in data.get("items") or []:
-            if item.get("symbol"):
-                quotes[item["symbol"]] = item
-    mids = {}
-    for symbol, q in quotes.items():
-        try:
-            mids[symbol] = (float(q["mid"]) if q.get("mid") not in (None, "")
-                            else (float(q["bid"]) + float(q["ask"])) / 2)
-        except (KeyError, TypeError, ValueError):
-            continue
-    return mids
 
 
 def _previous_trading_day(day: date) -> date:

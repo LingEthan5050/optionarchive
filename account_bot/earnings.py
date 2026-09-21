@@ -10,9 +10,9 @@ warns separately:
     soon as that is known, then again on the last session before the report;
   * a stock position whose company reports within STOCK_WINDOW days.
 
-Dates come live from /market-metrics, which covers any symbol, not just the
-archiver's watchlist. Two traps in that data, both checked against live
-responses:
+Dates come live from /market-metrics (via market.Snapshot), which covers
+any symbol, not just the archiver's watchlist. Two traps in that data, both
+checked against live responses:
 
   * expected-report-date goes stale: after a report it can keep showing the
     date that just passed. A date before today is treated as unknown.
@@ -29,8 +29,6 @@ from datetime import date, timedelta
 from account_bot.account import Position
 from account_bot.rules import Alert, Trade
 from chain_archiver import calendar as trading_calendar
-from chain_archiver.auth import TastytradeClient
-from chain_archiver.fetch import fetch_metrics
 
 #: How far ahead a stock position's earnings gets a heads-up, in days.
 STOCK_WINDOW = 7
@@ -66,19 +64,19 @@ class Earnings:
         return day
 
 
-def fetch(client: TastytradeClient, symbols: set[str], today: date) -> dict[str, Earnings]:
-    """Upcoming earnings for the given underlyings. Stale and missing dates
-    are left out."""
+def from_metrics(metrics: dict[str, dict], today: date) -> dict[str, Earnings]:
+    """Upcoming earnings from /market-metrics items keyed by symbol (as in
+    market.Snapshot.metrics). Stale and missing dates are left out."""
     found = {}
-    for item in fetch_metrics(client, sorted(symbols)) if symbols else []:
-        raw = (item.get("earnings") or {})
+    for symbol, item in metrics.items():
+        raw = item.get("earnings") or {}
         stamp = raw.get("expected-report-date")
         if not stamp:
             continue
         day = date.fromisoformat(stamp)
         if day < today:
             continue  # the stale-date trap: a report that already happened
-        found[item["symbol"]] = Earnings(item["symbol"], day, raw.get("time-of-day"))
+        found[symbol] = Earnings(symbol, day, raw.get("time-of-day"))
     return found
 
 
