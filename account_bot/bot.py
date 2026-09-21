@@ -16,6 +16,8 @@ who can read that channel can read those posts.
 
 Rule-of-thumb alerts (rules.py) are checked four times per trading day and
 posted once each: 28 and 21 DTE, and 50% of max profit on short premium.
+Earnings warnings (earnings.py) ride the same checks: an option trade whose
+underlying reports before it expires, and shares reporting within a week.
 
 The summary - day P/L and every option trade by days left - is posted on
 NYSE trading days at SUMMARY_TIMES Eastern (default 10:00 and 16:00). It
@@ -38,7 +40,7 @@ import discord
 from discord import app_commands
 from discord.ext import tasks
 
-from account_bot import account, messages, rules
+from account_bot import account, earnings, messages, rules
 from chain_archiver import calendar as trading_calendar
 from chain_archiver.auth import TastytradeClient
 from chain_archiver.config import Settings
@@ -95,12 +97,15 @@ class AccountBot(discord.Client):
                 client.close()
         return await asyncio.to_thread(work)
 
-    async def fetch_with_mids(self) -> tuple[list, dict[str, float]]:
+    async def fetch_with_mids(self) -> tuple[list, dict[str, float], dict]:
+        """Positions, live mids, and upcoming earnings for what is held."""
         def work():
             client = TastytradeClient(self.settings)
             try:
                 held = account.positions(client, account.accounts(client))
-                return held, _mids(client, held)
+                upcoming = earnings.fetch(client, {p.underlying for p in held},
+                                          account.today_eastern())
+                return held, _mids(client, held), upcoming
             finally:
                 client.close()
         return await asyncio.to_thread(work)
@@ -115,6 +120,8 @@ class AccountBot(discord.Client):
                 return {
                     "positions": held,
                     "mids": _mids(client, held),
+                    "earnings": earnings.fetch(client, {p.underlying for p in held},
+                                               account.today_eastern()),
                     "balances": account.balances(client, accts),
                     "prior": account.prior_net_liq(
                         client, accts, _previous_trading_day(account.today_eastern())),
@@ -128,6 +135,7 @@ class AccountBot(discord.Client):
             data["positions"], data["mids"], data["balances"], data["prior"],
             account.today_eastern(), stamp, dollars,
             soon=max(self.dte_alerts), manage=min(self.dte_alerts),
+            upcoming=data["earnings"],
         )
 
     # -- replies ----------------------------------------------------------
@@ -157,8 +165,9 @@ class AccountBot(discord.Client):
         @self.tree.command(description="Open trades with profit %, days left and entry prices")
         async def positions(interaction: discord.Interaction) -> None:
             async def build():
-                held, mids = await self.fetch_with_mids()
-                return messages.positions_detail(held, account.today_eastern(), mids)
+                held, mids, upcoming = await self.fetch_with_mids()
+                return messages.positions_detail(held, account.today_eastern(),
+                                                 mids, upcoming)
             await self.reply(interaction, build)
 
         @self.tree.command(description="Balances and buying power (only you see this)")
@@ -267,17 +276,20 @@ class AccountBot(discord.Client):
         return await self.dm_owner(text)
 
     async def check_alerts(self) -> None:
-        """Rule-of-thumb alerts: 28/21 DTE and 50% of max profit."""
+        """Rule-of-thumb alerts (28/21 DTE, 50% of max profit) and earnings
+        warnings for everything held."""
         today = account.today_eastern()
         if not trading_calendar.is_trading_day(today):
             return
         try:
-            held, mids = await self.fetch_with_mids()
+            held, mids, upcoming = await self.fetch_with_mids()
         except Exception:  # noqa: BLE001
             log.exception("Alerts: could not fetch positions")
             return
         trades = rules.group_trades(held)
+        stocks = [p for p in held if not p.is_option]
         due = rules.evaluate(trades, mids, today, self.dte_alerts, self.profit_target)
+        due += earnings.evaluate(trades, stocks, upcoming, today)
         new = self.alert_log.new(due)
         loud = [a for a in new if a.text]
         if loud:
@@ -287,7 +299,8 @@ class AccountBot(discord.Client):
                 return  # not recorded, so the next check tries again
         # Record even when nothing was loud: silent keys and pruning of
         # closed trades still need saving.
-        self.alert_log.record(new, trades)
+        self.alert_log.record(new, {t.key for t in trades}
+                              | {earnings.stock_key(p) for p in stocks})
         log.info("Alerts: %d trade(s) checked, %d alert(s) sent", len(trades), len(loud))
 
 

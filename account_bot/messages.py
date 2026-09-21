@@ -22,6 +22,7 @@ from collections import defaultdict
 from datetime import date
 
 from account_bot.account import Balance, Position
+from account_bot.earnings import affects
 from account_bot.rules import group_trades
 
 #: Discord rejects messages over 2000 characters.
@@ -79,6 +80,7 @@ def summary(
     dollars: bool,
     soon: int = SOON,
     manage: int = MANAGE,
+    upcoming: dict | None = None,
 ) -> str:
     """The twice-daily summary: day P/L, then each option trade.
 
@@ -118,7 +120,7 @@ def summary(
             if moved is not None:
                 today_part = f" · today {_signed_money(moved)}"
         lines.append(f"{_flag(days, soon, manage)} {trade.describe()} — "
-                     f"{_when(days)}{profit}{today_part}")
+                     f"{_when(days)}{profit}{today_part}{_earnings_mark(trade, upcoming)}")
 
     lines.append(f"-# 🔴 ≤{manage} days: manage  🟡 ≤{soon} days. Day P/L is the "
                  f"change in net liq since the last close, deposits included. "
@@ -132,8 +134,15 @@ def _pct(kind: str, share: float) -> str:
     return f"**{share:+.0%} return**"
 
 
+def _earnings_mark(trade, upcoming: dict | None) -> str:
+    """" · 📅 earnings Oct 20" when a report lands inside the trade's life."""
+    e = affects(trade, upcoming or {})
+    return f" · 📅 earnings {e.date:%b %d}" if e else ""
+
+
 def positions_detail(positions: list[Position], today: date,
-                     mids: dict[str, float] | None = None) -> str:
+                     mids: dict[str, float] | None = None,
+                     upcoming: dict | None = None) -> str:
     """EPHEMERAL only: every trade with its profit, legs and entry prices.
 
     Option legs are grouped into trades (rules.group_trades), because profit
@@ -156,7 +165,8 @@ def positions_detail(positions: list[Position], today: date,
             days = trade.days_left(today)
             result = trade.pnl(mids)
             profit = f" · {_pct(*result)}" if result else " · profit —"
-            lines.append(f"{_flag(days)} {trade.describe()} — {_when(days)}{profit}")
+            lines.append(f"{_flag(days)} {trade.describe()} — {_when(days)}{profit}"
+                         f"{_earnings_mark(trade, upcoming)}")
             for leg in sorted(trade.legs, key=lambda p: (p.option_type != "P", p.strike or 0)):
                 side = "short" if leg.quantity < 0 else "long"
                 entry = (f" · opened {leg.average_open_price:,.2f}"
@@ -172,7 +182,9 @@ def positions_detail(positions: list[Position], today: date,
                 move = (mids[p.symbol] - p.average_open_price) / p.average_open_price
                 # A short stock position profits when the price falls.
                 change = f" · **{move * (1 if p.quantity > 0 else -1):+.1%}**"
-            lines.append(f"▪️ {p.symbol} · {p.quantity:+g} sh{entry}{change}")
+            e = (upcoming or {}).get(p.symbol)
+            report = f" · 📅 earnings {e.date:%b %d}" if e else ""
+            lines.append(f"▪️ {p.symbol} · {p.quantity:+g} sh{entry}{change}{report}")
         lines.append("")
     lines.append("-# Credit trades: share of max profit. Debit trades and "
                  "stock: return on cost. Live mid prices.")

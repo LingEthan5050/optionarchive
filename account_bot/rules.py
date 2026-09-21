@@ -191,11 +191,14 @@ class AlertLog:
     def new(self, alerts: list[Alert]) -> list[Alert]:
         return [a for a in alerts if a.key not in self.fired]
 
-    def record(self, alerts: list[Alert], trades: list[Trade]) -> None:
+    def record(self, alerts: list[Alert], held: set[str]) -> None:
+        """Save newly fired keys, and forget any whose holding is gone.
+
+        Every key is "<kind>|<holding key>", where the holding key is a
+        Trade.key or earnings.stock_key(). `held` is the set of those for
+        everything currently open, so reopening the same structure later is
+        a new holding with its own alerts."""
         self.fired.update(a.key for a in alerts)
-        # Forget trades that are gone, so reopening the same structure later
-        # is a new trade with its own alerts.
-        held = {t.key for t in trades}
         self.fired = {k for k in self.fired if k.split("|", 1)[1] in held}
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text(json.dumps(sorted(self.fired), indent=1))

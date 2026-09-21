@@ -358,6 +358,22 @@ profit, flagged 🟡 at 28 days and 🔴 at 21 - and rule-of-thumb alerts checke
   take-profit guideline. Debit trades have no equally standard rule, so they
   get the DTE alerts only.
 
+**Earnings warnings** ride the same checks, for what you actually hold:
+
+- 📅 an option trade whose underlying reports *before the trade expires* -
+  once when that becomes known, with a note on how the report tends to hit
+  that kind of trade (IV drops after the report: good for short premium,
+  bad for long; a big gap hurts short premium);
+- ⚠️ again on the last trading session before the report;
+- 📅 shares whose company reports within 7 days.
+
+The summary and `/positions` mark affected trades with `📅 earnings <date>`.
+Dates come live from tastytrade's market metrics, so any symbol works, not
+just the archiver's watchlist. Stale dates (a report that already happened)
+are ignored, and since before-open/after-close is usually unannounced, an
+unknown time is treated as before the open, so no warning comes a session
+late.
+
 Day P/L is the change in net liquidating value since the previous close,
 from tastytrade's end-of-day balance snapshot, so a trade closed today counts
 - and so does a deposit or withdrawal.
