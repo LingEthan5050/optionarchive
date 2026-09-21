@@ -341,13 +341,14 @@ session on your phone.
 ```
 /positions   every open position with days left and entry prices
 /balance     net liq, cash and buying power per account, and the total
-/expiring    options sorted by days to expiration
+/expiring    the summary right now, with dollar amounts (only you see it)
 /alerttest   post a test message where alerts go
 ```
 
 Plus, posted in the `#options` channel (`ALERT_CHANNEL`; a DM if that channel
-is missing), a summary each NYSE trading day at 16:30 ET listing option
-positions by days left, flagged at 7 and 3 days, and rule-of-thumb alerts checked at 09:45,
+is missing), a summary at 10:00 and 16:00 ET each NYSE trading day
+(`SUMMARY_TIMES`) - the day's P/L and every option trade with days left and
+profit, flagged 🟡 at 28 days and 🔴 at 21 - and rule-of-thumb alerts checked at 09:45,
 12:00, 14:00 and 15:30 ET, each sent once per trade:
 
 - **28 DTE** - a week's notice before the management point.
@@ -356,6 +357,10 @@ positions by days left, flagged at 7 and 3 days, and rule-of-thumb alerts checke
 - **50% of max profit** on short-premium (credit) trades - tastytrade's
   take-profit guideline. Debit trades have no equally standard rule, so they
   get the DTE alerts only.
+
+Day P/L is the change in net liquidating value since the previous close,
+from tastytrade's end-of-day balance snapshot, so a trade closed today counts
+- and so does a deposit or withdrawal.
 
 Option legs are grouped into trades by account and underlying, so a condor
 is judged as one trade rather than four legs. Change the thresholds with
@@ -371,8 +376,9 @@ there as possible:
 - Command replies are *ephemeral* - only you see them and they are not saved
   to the chat. Money figures appear only here.
 - The summary and alerts are the only things saved to history. They carry
-  symbol, strikes, expiration, side, days left and, on a take-profit alert,
-  the share of max profit - no prices, balances or account numbers. They are
+  symbol, strikes, expiration, days left, and profit and day P/L as
+  percentages - no prices, balances or account numbers, and no dollar
+  amounts unless `SUMMARY_DOLLARS` is switched on. They are
   readable by everyone who can see `#options`, so make that channel private
   if anyone else is in the server.
 - The bot answers one Discord user, `DISCORD_OWNER_ID`, and refuses everyone

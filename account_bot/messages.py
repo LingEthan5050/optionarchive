@@ -3,11 +3,12 @@
 Two tiers, because Discord keeps message history indefinitely and does not
 encrypt it end to end.
 
-  * reminder() and the rule alerts are POSTED - to the alert channel
+  * summary() and the rule alerts are POSTED - to the alert channel
     (#options by default), where they stay, readable by anyone who can see
-    that channel. They carry the minimum that makes them useful: symbol,
-    strikes, expiration, side, days left, and for a take-profit alert the
-    share of max profit. No dollar amounts, no prices, no account numbers.
+    that channel. They carry symbol, strikes, expiration, days left, and
+    profit and day P/L as PERCENTAGES. Dollar amounts appear in a posted
+    summary only when SUMMARY_DOLLARS is switched on; never prices or
+    account numbers.
   * positions_detail() and balance() are only ever sent as EPHEMERAL replies
     to a slash command: visible to you alone, not written to channel history,
     gone when you dismiss them. Money figures live only here.
@@ -26,17 +27,11 @@ from account_bot.rules import group_trades
 #: Discord rejects messages over 2000 characters.
 LIMIT = 2000
 
-#: Days-left values that get called out in the reminder.
-URGENT = 3
-SOON = 7
+#: Days-left flags, matching the rule-of-thumb alerts: 🔴 at or inside the
+#: 21-DTE management point, 🟡 in the week before it.
+MANAGE = 21
+SOON = 28
 
-
-def _contract(p: Position) -> str:
-    strike = f"{p.strike:g}" if p.strike is not None else "?"
-    side = "short" if p.quantity < 0 else "long"
-    qty = abs(p.quantity)
-    return (f"{p.underlying} {p.expires:%b %d} {strike}{p.option_type or ''} "
-            f"· {side} {qty:g}")
 
 
 def _when(days: int) -> str:
@@ -49,10 +44,10 @@ def _when(days: int) -> str:
     return f"{days} days left"
 
 
-def _flag(days: int) -> str:
-    if days <= URGENT:
+def _flag(days: int, soon: int = SOON, manage: int = MANAGE) -> str:
+    if days <= manage:
         return "🔴"
-    if days <= SOON:
+    if days <= soon:
         return "🟡"
     return "▫️"
 
@@ -70,24 +65,64 @@ def chunk(text: str) -> list[str]:
     return parts or [""]
 
 
-def reminder(positions: list[Position], today: date) -> str | None:
-    """The daily POSTED summary: option positions by days left. None when
-    there are no options, so the bot stays quiet rather than posting noise."""
-    options = sorted(
-        (p for p in positions if p.is_option), key=lambda p: p.expires
-    )
-    if not options:
-        return None
+def _signed_money(value: float) -> str:
+    return f"{'+' if value >= 0 else '-'}${abs(value):,.2f}"
 
-    urgent = sum(1 for p in options if p.days_left(today) <= URGENT)
-    head = f"**Open options — {today:%a %b %d}**"
-    if urgent:
-        head += f"  ·  {urgent} within {URGENT} days"
-    lines = [head]
-    for p in options:
-        days = p.days_left(today)
-        lines.append(f"{_flag(days)} {_contract(p)} — {_when(days)}")
-    lines.append("-# 🔴 ≤3 days  🟡 ≤7 days. Prices and balances: /positions, /balance")
+
+def summary(
+    positions: list[Position],
+    mids: dict[str, float],
+    balances: list[Balance],
+    prior_net_liq: dict[str, float],
+    today: date,
+    stamp: str,
+    dollars: bool,
+    soon: int = SOON,
+    manage: int = MANAGE,
+) -> str:
+    """The twice-daily summary: day P/L, then each option trade.
+
+    Day P/L is the change in net liquidating value since the previous close,
+    summed over the accounts that have a snapshot for it. It is complete in a
+    way that adding up open positions is not - a trade closed today still
+    counts - but a deposit or withdrawal counts too.
+
+    dollars=False (the posted default) shows percentages only. The ephemeral
+    /expiring reply passes True.
+    """
+    lines = [f"**Options summary — {today:%a %b %d} · {stamp}**"]
+
+    now = {b.account: b.net_liquidating_value for b in balances
+           if b.net_liquidating_value is not None}
+    common = [a for a in now if a in prior_net_liq]
+    before = sum(prior_net_liq[a] for a in common)
+    if common and before:
+        change = sum(now[a] for a in common) - before
+        pct = f"{change / before:+.2%}"
+        figure = f"**{_signed_money(change)}** ({pct})" if dollars else f"**{pct}**"
+        lines.append(f"Day P/L: {figure} across {len(common)} account"
+                     f"{'s' if len(common) != 1 else ''}")
+    else:
+        lines.append("Day P/L: — (no prior-close snapshot)")
+
+    trades = group_trades(positions)
+    if not trades:
+        lines.append("No open option positions.")
+    for trade in trades:
+        days = trade.days_left(today)
+        result = trade.pnl(mids)
+        profit = f" · {_pct(*result)}" if result else ""
+        today_part = ""
+        if dollars:
+            moved = trade.day_change(mids, today)
+            if moved is not None:
+                today_part = f" · today {_signed_money(moved)}"
+        lines.append(f"{_flag(days, soon, manage)} {trade.describe()} — "
+                     f"{_when(days)}{profit}{today_part}")
+
+    lines.append(f"-# 🔴 ≤{manage} days: manage  🟡 ≤{soon} days. Day P/L is the "
+                 f"change in net liq since the last close, deposits included. "
+                 f"Details: /positions, /balance")
     return "\n".join(lines)
 
 

@@ -87,6 +87,19 @@ class Trade:
         paid, worth = -credit, -close
         return "debit", (worth - paid) / paid
 
+    def day_change(self, mids: dict[str, float], today: date) -> float | None:
+        """Dollars gained or lost since the previous close (or since entry,
+        for a leg opened today). None if any leg lacks a price, so a partial
+        number never passes for the whole trade's."""
+        total = 0.0
+        for p in self.legs:
+            base = p.day_baseline(today)
+            if base is None or p.symbol not in mids:
+                return None
+            # quantity is signed, so a short leg gains when its price falls.
+            total += (mids[p.symbol] - base) * p.quantity * p.multiplier
+        return total
+
     def profit_share(self, mids: dict[str, float]) -> float | None:
         """Share of max profit, for credit trades only - what the 50% alert
         measures."""

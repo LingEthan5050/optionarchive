@@ -1,25 +1,27 @@
-"""The Discord bot: two private slash commands and a daily expiration reminder.
+"""The Discord bot: private slash commands, a twice-daily summary and alerts.
 
     python -m account_bot
 
   /positions   every open trade with profit %, days left and entry prices
   /balance     net liq, cash and buying power per account, and the total
-  /expiring    the daily reminder, on demand
+  /expiring    the summary right now, with dollar amounts (only you see it)
   /alerttest   post a test message where alerts go
 
 Every command reply is EPHEMERAL - only you see it and it is not saved to the
 chat - and the bot answers one Discord user, DISCORD_OWNER_ID, and nobody
-else. What it posts unprompted - the reminder and the alerts - goes to the
+else. What it posts unprompted - the summary and the alerts - goes to the
 ALERT_CHANNEL text channel (default #options), falling back to a DM if that
 channel is missing, and carries no money figures (see messages.py). Anyone
 who can read that channel can read those posts.
 
 Rule-of-thumb alerts (rules.py) are checked four times per trading day and
-DM'd once each: 28 and 21 DTE, and 50% of max profit on short premium.
+posted once each: 28 and 21 DTE, and 50% of max profit on short premium.
 
-The reminder goes out once per NYSE trading day at REMINDER_TIME Eastern
-(default 16:30: after the close, and after the 16:05 greeks run), and only
-when there is at least one option position to remind you about.
+The summary - day P/L and every option trade by days left - is posted on
+NYSE trading days at SUMMARY_TIMES Eastern (default 10:00 and 16:00). It
+shows percentages only unless SUMMARY_DOLLARS is on, because the channel it
+posts to may be readable by others; /expiring shows the dollar version to
+you alone.
 
 The tastytrade calls are synchronous httpx, so they run in a worker thread;
 calling them directly would stall the Discord connection's heartbeat.
@@ -30,7 +32,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from datetime import time
+from datetime import date, datetime, time, timedelta
 
 import discord
 from discord import app_commands
@@ -44,7 +46,9 @@ from chain_archiver.fetch import fetch_option_quotes
 
 log = logging.getLogger("account_bot")
 
-DEFAULT_REMINDER = time(16, 30)
+#: When the summary is posted, Eastern: half an hour after the open, once
+#: the first half hour's wide spreads have settled, and at the close.
+DEFAULT_SUMMARY_TIMES = (time(10, 0), time(16, 0))
 
 #: When the rule-of-thumb alerts are checked, Eastern. Inside market hours so
 #: an alert arrives while you can still act on it; the first check leaves the
@@ -54,10 +58,11 @@ ALERT_CHECKS = (time(9, 45), time(12, 0), time(14, 0), time(15, 30))
 
 class AccountBot(discord.Client):
     def __init__(self, settings: Settings, owner_id: int, guild_id: int | None,
-                 reminder_at: time,
+                 summary_times: tuple[time, ...] = DEFAULT_SUMMARY_TIMES,
                  dte_alerts: tuple[int, ...] = rules.DEFAULT_DTE_ALERTS,
                  profit_target: float = rules.DEFAULT_PROFIT_TARGET,
-                 alert_channel: str = "options") -> None:
+                 alert_channel: str = "options",
+                 summary_dollars: bool = False) -> None:
         # Guilds only. Slash commands arrive as interactions, and discord.py
         # needs the (unprivileged) guilds intent to keep its state straight;
         # the bot has no reason to see messages, members or presence.
@@ -67,7 +72,9 @@ class AccountBot(discord.Client):
         self.settings = settings
         self.owner_id = owner_id
         self.guild_id = guild_id
-        self.reminder_at = reminder_at.replace(tzinfo=account.EASTERN)
+        self.summary_times = tuple(t.replace(tzinfo=account.EASTERN)
+                                   for t in summary_times)
+        self.summary_dollars = summary_dollars
         self.tree = app_commands.CommandTree(self)
         self.dte_alerts = dte_alerts
         self.profit_target = profit_target
@@ -93,28 +100,35 @@ class AccountBot(discord.Client):
             client = TastytradeClient(self.settings)
             try:
                 held = account.positions(client, account.accounts(client))
-                symbols = [p.symbol for p in held if p.is_option]
-                quotes = fetch_option_quotes(client, symbols) if symbols else {}
-                stocks = sorted({p.symbol for p in held
-                                 if p.instrument_type == "Equity"})
-                if stocks:
-                    data = client.get("/market-data/by-type",
-                                      params={"equity": ",".join(stocks)})
-                    for item in data.get("items") or []:
-                        if item.get("symbol"):
-                            quotes[item["symbol"]] = item
+                return held, _mids(client, held)
             finally:
                 client.close()
-            mids = {}
-            for symbol, q in quotes.items():
-                try:
-                    mid = float(q["mid"]) if q.get("mid") not in (None, "") else (
-                        (float(q["bid"]) + float(q["ask"])) / 2)
-                except (KeyError, TypeError, ValueError):
-                    continue
-                mids[symbol] = mid
-            return held, mids
         return await asyncio.to_thread(work)
+
+    async def fetch_summary(self) -> dict:
+        """Everything the summary needs, in one authenticated session."""
+        def work():
+            client = TastytradeClient(self.settings)
+            try:
+                accts = account.accounts(client)
+                held = account.positions(client, accts)
+                return {
+                    "positions": held,
+                    "mids": _mids(client, held),
+                    "balances": account.balances(client, accts),
+                    "prior": account.prior_net_liq(
+                        client, accts, _previous_trading_day(account.today_eastern())),
+                }
+            finally:
+                client.close()
+        return await asyncio.to_thread(work)
+
+    def render_summary(self, data: dict, stamp: str, dollars: bool) -> str:
+        return messages.summary(
+            data["positions"], data["mids"], data["balances"], data["prior"],
+            account.today_eastern(), stamp, dollars,
+            soon=max(self.dte_alerts), manage=min(self.dte_alerts),
+        )
 
     # -- replies ----------------------------------------------------------
 
@@ -153,12 +167,12 @@ class AccountBot(discord.Client):
                 return messages.balance(await self.fetch(balances=True))
             await self.reply(interaction, build)
 
-        @self.tree.command(description="Options sorted by days to expiration")
+        @self.tree.command(description="Summary now: day P/L and options by days left")
         async def expiring(interaction: discord.Interaction) -> None:
             async def build():
-                held = await self.fetch()
-                return (messages.reminder(held, account.today_eastern())
-                        or "No open option positions.")
+                data = await self.fetch_summary()
+                now = datetime.now(account.EASTERN)
+                return self.render_summary(data, f"{now:%H:%M} ET", dollars=True)
             await self.reply(interaction, build)
 
         @self.tree.command(description="Post a test message where alerts go")
@@ -182,7 +196,7 @@ class AccountBot(discord.Client):
         else:
             await self.tree.sync()
 
-        self.daily = tasks.loop(time=self.reminder_at)(self.send_reminder)
+        self.daily = tasks.loop(time=list(self.summary_times))(self.send_summary)
         self.daily.before_loop(self.wait_until_ready)
         self.daily.start()
 
@@ -192,31 +206,29 @@ class AccountBot(discord.Client):
         self.alerts.start()
 
     async def on_ready(self) -> None:
-        log.info("Connected as %s; reminder at %s ET", self.user,
-                 self.reminder_at.strftime("%H:%M"))
+        log.info("Connected as %s; summaries at %s ET (%s)", self.user,
+                 ", ".join(f"{t:%H:%M}" for t in self.summary_times),
+                 "with dollar amounts" if self.summary_dollars else "percentages only")
         if self.find_alert_channel():
-            log.info("Alerts and reminders post in #%s", self.alert_channel)
+            log.info("Alerts and summaries post in #%s", self.alert_channel)
         else:
             log.warning("No #%s channel found; alerts will be DM'd instead",
                         self.alert_channel)
 
-    async def send_reminder(self) -> None:
+    async def send_summary(self) -> None:
         today = account.today_eastern()
         if not trading_calendar.is_trading_day(today):
             return
         try:
-            held = await self.fetch()
+            data = await self.fetch_summary()
         except Exception:  # noqa: BLE001
-            log.exception("Reminder: could not fetch positions")
+            log.exception("Summary: could not fetch account data")
             return
-        text = messages.reminder(held, today)
-        if text is None:
-            log.info("Reminder: no option positions, nothing sent")
-            return
-        if await self.post(text):
-            log.info("Reminder sent: %d option position(s)",
-                     sum(p.is_option for p in held))
-
+        now = datetime.now(account.EASTERN)
+        stamp = f"{now:%H:%M} ET" + (" · close" if now.hour >= 16 else "")
+        if await self.post(self.render_summary(data, stamp, self.summary_dollars)):
+            log.info("Summary sent: %d option trade(s)",
+                     len(rules.group_trades(data["positions"])))
 
     async def dm_owner(self, text: str) -> bool:
         try:
@@ -279,12 +291,41 @@ class AccountBot(discord.Client):
         log.info("Alerts: %d trade(s) checked, %d alert(s) sent", len(trades), len(loud))
 
 
-def _reminder_time() -> time:
-    raw = os.environ.get("REMINDER_TIME", "").strip()
-    if not raw:
-        return DEFAULT_REMINDER
-    hour, minute = raw.split(":")
-    return time(int(hour), int(minute))
+def _mids(client: TastytradeClient, held: list) -> dict[str, float]:
+    """Live mid prices for every option and stock position held."""
+    symbols = [p.symbol for p in held if p.is_option]
+    quotes = fetch_option_quotes(client, symbols) if symbols else {}
+    stocks = sorted({p.symbol for p in held if p.instrument_type == "Equity"})
+    if stocks:
+        data = client.get("/market-data/by-type", params={"equity": ",".join(stocks)})
+        for item in data.get("items") or []:
+            if item.get("symbol"):
+                quotes[item["symbol"]] = item
+    mids = {}
+    for symbol, q in quotes.items():
+        try:
+            mids[symbol] = (float(q["mid"]) if q.get("mid") not in (None, "")
+                            else (float(q["bid"]) + float(q["ask"])) / 2)
+        except (KeyError, TypeError, ValueError):
+            continue
+    return mids
+
+
+def _previous_trading_day(day: date) -> date:
+    day -= timedelta(days=1)
+    while not trading_calendar.is_trading_day(day):
+        day -= timedelta(days=1)
+    return day
+
+
+def _times(raw: str, default: tuple[time, ...]) -> tuple[time, ...]:
+    """"10:00,16:00" -> (time(10, 0), time(16, 0))."""
+    parsed = []
+    for part in raw.split(","):
+        if part.strip():
+            hour, minute = part.strip().split(":")
+            parsed.append(time(int(hour), int(minute)))
+    return tuple(parsed) or default
 
 
 def main() -> int:
@@ -310,7 +351,10 @@ def main() -> int:
 
     channel = os.environ.get("ALERT_CHANNEL", "").strip().lstrip("#") or "options"
 
+    times = _times(os.environ.get("SUMMARY_TIMES", ""), DEFAULT_SUMMARY_TIMES)
+    dollars = os.environ.get("SUMMARY_DOLLARS", "").strip().lower() in ("1", "true", "yes", "on")
+
     bot = AccountBot(settings, int(owner), int(guild) if guild.isdigit() else None,
-                     _reminder_time(), dte, target, channel)
+                     times, dte, target, channel, dollars)
     bot.run(token, log_handler=None)
     return 0

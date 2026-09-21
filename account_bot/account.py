@@ -48,6 +48,16 @@ class Position:
     expires: date | None = None
     strike: float | None = None
     option_type: str | None = None
+    #: Previous session's closing mark - the baseline for today's change.
+    prior_close: float | None = None
+    #: Eastern date the position was opened. A position opened today has no
+    #: meaningful prior close of its own, so its day change runs from entry.
+    opened_on: date | None = None
+
+    def day_baseline(self, today: date) -> float | None:
+        if self.opened_on == today:
+            return self.average_open_price
+        return self.prior_close
 
     @property
     def is_option(self) -> bool:
@@ -86,6 +96,13 @@ def accounts(client: TastytradeClient) -> list[Account]:
         kind = acc.get("nickname") or acc.get("account-type-name") or "Account"
         found.append(Account(number, f"{kind} …{number[-4:]}"))
     return found
+
+
+def _eastern_date(stamp: str | None) -> date | None:
+    if not stamp:
+        return None
+    moment = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    return moment.astimezone(EASTERN).date()
 
 
 def _option_fields(raw: dict) -> tuple[date | None, float | None, str | None]:
@@ -127,6 +144,8 @@ def positions(client: TastytradeClient, accts: list[Account]) -> list[Position]:
                 expires=expires,
                 strike=strike,
                 option_type=option_type,
+                prior_close=_num(raw.get("close-price")),
+                opened_on=_eastern_date(raw.get("created-at")),
             ))
     return found
 
@@ -145,6 +164,30 @@ def balances(client: TastytradeClient, accts: list[Account]) -> list[Balance]:
             derivative_buying_power=_num(raw.get("derivative-buying-power")),
             equity_buying_power=_num(raw.get("equity-buying-power")),
         ))
+    return found
+
+
+def prior_net_liq(client: TastytradeClient, accts: list[Account],
+                  day: date) -> dict[str, float]:
+    """Each account's net liq at the close of `day`, keyed by label.
+
+    balance-snapshots returns the requested end-of-day snapshot AND today's
+    live one in the same response, so the EOD row has to be picked out by
+    date and time-of-day rather than taken as the first item. Accounts with
+    no snapshot for that day are left out rather than treated as zero.
+    """
+    found = {}
+    for acct in accts:
+        data = client.get(f"/accounts/{acct.number}/balance-snapshots",
+                          params={"snapshot-date": day.isoformat(),
+                                  "time-of-day": "EOD"})
+        for item in data.get("items") or []:
+            if (item.get("snapshot-date") == day.isoformat()
+                    and item.get("time-of-day") == "EOD"):
+                value = _num(item.get("net-liquidating-value"))
+                if value is not None:
+                    found[acct.label] = value
+                break
     return found
 
 
