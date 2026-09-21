@@ -19,10 +19,11 @@ If you add a message, decide its tier first.
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import date
+from datetime import date, datetime
 
-from account_bot.account import Balance, Position
+from account_bot.account import EASTERN, Balance, Position
 from account_bot.earnings import affects, from_metrics
+from account_bot import greeks
 from account_bot.market import Snapshot
 from account_bot.rules import group_trades
 
@@ -71,12 +72,24 @@ def _signed_money(value: float) -> str:
     return f"{'+' if value >= 0 else '-'}${abs(value):,.2f}"
 
 
+def _portfolio_line(pf: greeks.Portfolio) -> list[str]:
+    """Theta per day and beta-weighted delta, plus anything left out."""
+    parts = [f"Θ **{_signed_money(pf.theta)}/day**"]
+    if pf.beta_delta is not None:
+        parts.append(f"β-weighted Δ **{pf.beta_delta:+.0f} SPY sh**")
+    lines = ["Portfolio: " + " · ".join(parts)]
+    if pf.skipped:
+        lines.append(f"-# Not in these totals: {', '.join(pf.skipped)}")
+    return lines
+
+
 def summary(
     snap: Snapshot,
     stamp: str,
     dollars: bool,
     soon: int = SOON,
     manage: int = MANAGE,
+    now: datetime | None = None,
 ) -> str:
     """The twice-daily summary: day P/L, then each option trade.
 
@@ -93,18 +106,22 @@ def summary(
     upcoming = from_metrics(snap.metrics, today)
     lines = [f"**Options summary — {today:%a %b %d} · {stamp}**"]
 
-    now = {b.account: b.net_liquidating_value for b in balances
-           if b.net_liquidating_value is not None}
-    common = [a for a in now if a in prior_net_liq]
+    current = {b.account: b.net_liquidating_value for b in balances
+               if b.net_liquidating_value is not None}
+    common = [a for a in current if a in prior_net_liq]
     before = sum(prior_net_liq[a] for a in common)
     if common and before:
-        change = sum(now[a] for a in common) - before
+        change = sum(current[a] for a in common) - before
         pct = f"{change / before:+.2%}"
         figure = f"**{_signed_money(change)}** ({pct})" if dollars else f"**{pct}**"
         lines.append(f"Day P/L: {figure} across {len(common)} account"
                      f"{'s' if len(common) != 1 else ''}")
     else:
         lines.append("Day P/L: — (no prior-close snapshot)")
+
+    if dollars:
+        # Theta is a dollar figure, so it follows the same gate as day P/L.
+        lines += _portfolio_line(greeks.portfolio(snap, now or datetime.now(EASTERN)))
 
     trades = group_trades(positions)
     if not trades:
@@ -139,7 +156,7 @@ def _earnings_mark(trade, upcoming: dict | None) -> str:
     return f" · 📅 earnings {e.date:%b %d}" if e else ""
 
 
-def positions_detail(snap: Snapshot) -> str:
+def positions_detail(snap: Snapshot, now: datetime | None = None) -> str:
     """EPHEMERAL only: every trade with its profit, legs and entry prices.
 
     Option legs are grouped into trades (rules.group_trades), because profit
@@ -150,13 +167,14 @@ def positions_detail(snap: Snapshot) -> str:
     """
     positions, mids, today = snap.positions, snap.mids, snap.today
     upcoming = from_metrics(snap.metrics, today)
+    now = now or datetime.now(EASTERN)
     if not positions:
         return "No open positions."
     by_account: dict[str, list[Position]] = defaultdict(list)
     for p in positions:
         by_account[p.account].append(p)
 
-    lines = []
+    lines = _portfolio_line(greeks.portfolio(snap, now)) + [""]
     for account, held in by_account.items():
         lines.append(f"**{account}**")
         for trade in group_trades(held):
@@ -165,6 +183,9 @@ def positions_detail(snap: Snapshot) -> str:
             profit = f" · {_pct(*result)}" if result else " · profit —"
             lines.append(f"{_flag(days)} {trade.describe()} — {_when(days)}{profit}"
                          f"{_earnings_mark(trade, upcoming)}")
+            exposure = greeks.trade(trade, snap, now)
+            if exposure is not None:
+                lines.append(f"  Δ {exposure.delta:+.0f} sh · Θ {_signed_money(exposure.theta)}/day")
             for leg in sorted(trade.legs, key=lambda p: (p.option_type != "P", p.strike or 0)):
                 side = "short" if leg.quantity < 0 else "long"
                 entry = (f" · opened {leg.average_open_price:,.2f}"
@@ -184,8 +205,9 @@ def positions_detail(snap: Snapshot) -> str:
             report = f" · 📅 earnings {e.date:%b %d}" if e else ""
             lines.append(f"▪️ {p.symbol} · {p.quantity:+g} sh{entry}{change}{report}")
         lines.append("")
-    lines.append("-# Credit trades: share of max profit. Debit trades and "
-                 "stock: return on cost. Live mid prices.")
+    lines.append("-# Credit trades: share of max profit. Debit trades and stock: "
+                 "return on cost. Δ in shares of the underlying; β-weighted Δ as "
+                 "SPY shares. Θ: dollars per day from time decay. Live mids.")
     return "\n".join(lines).rstrip()
 
 
