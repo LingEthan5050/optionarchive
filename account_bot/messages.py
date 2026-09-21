@@ -263,3 +263,52 @@ def balance(balances: list[Balance]) -> str:
     lines.append(f"**Total net liq {_money(total)}**")
     lines.append("-# Only you can see this. It isn't saved to the chat.")
     return "\n".join(lines)
+
+
+#: How to use each slash command. help_text() takes the command names and
+#: descriptions from the live command tree, so it cannot list a command that
+#: doesn't exist; this adds the example and what to expect. A command
+#: registered without an entry here fails the help test rather than showing
+#: up bare.
+USAGE = {
+    "positions": ("/positions",
+                  "Every trade: days left, profit %, Δ/Θ, IV rank now vs entry, your notes. "
+                  "Opens with portfolio Θ per day and β-weighted Δ."),
+    "balance": ("/balance", "Net liq, cash and buying power for each account, and the total."),
+    "expiring": ("/expiring",
+                 "The summary right now, in dollars: day P/L, portfolio greeks, each trade."),
+    "note": ("/note symbol:SPY note:selling premium, IVR 60",
+             "Save why you opened a trade. Shows under it in /positions and in the recap."),
+    "recap": ("/recap", "This week's closed trades with their last-seen profit and your notes."),
+    "alerttest": ("/alerttest", "Posts a test message where alerts go, to check the channel works."),
+    "help": ("/help", "This list."),
+}
+
+
+def help_text(commands: list[tuple[str, str]], summary_times: list[str],
+              alert_times: list[str], channel: str, soon: int, manage: int,
+              profit_target: float, tested_buffer: float) -> str:
+    """EPHEMERAL: every command with an example, then what runs on its own."""
+    lines = ["**Options bot — commands**",
+             "-# Replies are only visible to you and aren't saved to the chat.", ""]
+    # In USAGE's order - most used first - with anything unlisted at the end.
+    rank = {name: i for i, name in enumerate(USAGE)}
+    for name, description in sorted(commands, key=lambda c: (rank.get(c[0], len(rank)), c[0])):
+        example, detail = USAGE.get(name, (f"/{name}", description))
+        lines.append(f"`{example}`")
+        lines.append(f"  {detail}")
+    lines += [
+        "",
+        f"**Automatic** (NYSE trading days, Eastern time)",
+        f"• **Summary** {', '.join(summary_times)} in #{channel}: day P/L and each "
+        f"trade by days left (percentages; dollars via /expiring).",
+        f"• **Alerts** checked {', '.join(alert_times)} in #{channel}, each sent once:",
+        f"  🟡 {soon} days to expiration · 🔴 {manage} days: manage (close or roll)",
+        f"  ✅ {profit_target:.0%} of max profit on a credit trade",
+        f"  🎯 stock within {tested_buffer:.0%} of, or through, a short strike",
+        f"  📅 earnings before a trade expires, or on shares within a week · "
+        f"⚠️ last session before the report",
+        "• **Weekly recap** on the week's last trading day at 16:15, by DM.",
+    ]
+    return "\n".join(lines)
+

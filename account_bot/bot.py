@@ -8,6 +8,7 @@
   /note        record why you opened a trade
   /recap       this week's closed trades, with your notes
   /alerttest   post a test message where alerts go
+  /help        every command with an example, and what runs automatically
 
 Every command reply is EPHEMERAL - only you see it and it is not saved to the
 chat - and the bot answers one Discord user, DISCORD_OWNER_ID, and nobody
@@ -119,6 +120,15 @@ class AccountBot(discord.Client):
                 client.close()
         return await asyncio.to_thread(work)
 
+    def help_text(self) -> str:
+        return messages.help_text(
+            [(c.name, c.description) for c in self.tree.get_commands()],
+            [f"{t:%H:%M}" for t in self.summary_times],
+            [f"{t:%H:%M}" for t in ALERT_CHECKS],
+            self.alert_channel, max(self.dte_alerts), min(self.dte_alerts),
+            self.profit_target, self.tested_buffer,
+        )
+
     def render_summary(self, snap: market.Snapshot, stamp: str, dollars: bool) -> str:
         return messages.summary(snap, stamp, dollars,
                                 soon=max(self.dte_alerts), manage=min(self.dte_alerts))
@@ -181,6 +191,12 @@ class AccountBot(discord.Client):
         async def recap(interaction: discord.Interaction) -> None:
             async def build():
                 return self.journal.recap(account.today_eastern())
+            await self.reply(interaction, build)
+
+        @self.tree.command(description="List every command, how to use it, and what runs automatically")
+        async def help(interaction: discord.Interaction) -> None:
+            async def build():
+                return self.help_text()
             await self.reply(interaction, build)
 
         @self.tree.command(description="Post a test message where alerts go")
