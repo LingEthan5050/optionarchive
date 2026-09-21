@@ -43,7 +43,7 @@ import discord
 from discord import app_commands
 from discord.ext import tasks
 
-from account_bot import account, earnings, journal, market, messages, rules
+from account_bot import account, cards, earnings, journal, market, messages, rules
 from chain_archiver import calendar as trading_calendar
 from chain_archiver.auth import TastytradeClient
 from chain_archiver.config import Settings
@@ -136,7 +136,8 @@ class AccountBot(discord.Client):
     # -- replies ----------------------------------------------------------
 
     async def reply(self, interaction: discord.Interaction, build) -> None:
-        """Owner check, then an ephemeral reply built from fresh data."""
+        """Owner check, then an ephemeral reply - text or embeds - built from
+        fresh data."""
         if interaction.user.id != self.owner_id:
             log.warning("Refused /%s from user %s", interaction.command.name,
                         interaction.user.id)
@@ -147,12 +148,17 @@ class AccountBot(discord.Client):
         # past Discord's 3-second window for an immediate answer.
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
-            text = await build()
+            result = await build()
         except Exception as exc:  # noqa: BLE001 - surface it, don't crash
             log.exception("/%s failed", interaction.command.name)
-            text = f"Couldn't reach tastytrade ({type(exc).__name__}). Try again shortly."
-        for part in messages.chunk(text):
-            await interaction.followup.send(part, ephemeral=True)
+            result = f"Couldn't reach tastytrade ({type(exc).__name__}). Try again shortly."
+        # A build returns either text or a list of embeds (cards.py).
+        if isinstance(result, str):
+            for part in messages.chunk(result):
+                await interaction.followup.send(part, ephemeral=True)
+        else:
+            for batch in cards.batches(result):
+                await interaction.followup.send(embeds=batch, ephemeral=True)
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -160,8 +166,9 @@ class AccountBot(discord.Client):
         @self.tree.command(description="Open trades with profit %, days left and entry prices")
         async def positions(interaction: discord.Interaction) -> None:
             async def build():
-                return messages.positions_detail(await self.snapshot(),
-                                                 notes=self.journal)
+                return cards.positions_cards(await self.snapshot(), notes=self.journal,
+                                             soon=max(self.dte_alerts),
+                                             manage=min(self.dte_alerts))
             await self.reply(interaction, build)
 
         @self.tree.command(description="Balances and buying power (only you see this)")
