@@ -5,8 +5,8 @@
 
 This is the reading layer, kept as a separate program from the archiver so
 either side can be rewritten without touching the other. It registers the
-partitions as views named `chains` and `metrics` so the UI presents tables
-rather than parquet globs.
+partitions as views named `chains`, `metrics` and `greeks` so the UI presents
+tables rather than parquet globs.
 
 Read-only by construction: the connection is in-memory and the views point at
 the parquet files, so nothing typed into the UI can modify the archive.
@@ -20,7 +20,13 @@ from pathlib import Path
 import duckdb
 
 REPO = Path(__file__).resolve().parent.parent
-DATASETS = ("chains", "metrics")
+#: View name -> directory under the archive root. greeks lives under derived/
+#: because it is regenerable from chains; the view name drops that prefix.
+DATASETS = {
+    "chains": Path("chains"),
+    "metrics": Path("metrics"),
+    "greeks": Path("derived", "greeks"),
+}
 
 
 def main() -> int:
@@ -35,8 +41,8 @@ def main() -> int:
     con = duckdb.connect()
 
     registered = []
-    for name in DATASETS:
-        directory = root / name
+    for name, subdir in DATASETS.items():
+        directory = root / subdir
         if not directory.exists() or not any(directory.rglob("*.parquet")):
             print(f"  {name:8} no partitions yet")
             continue

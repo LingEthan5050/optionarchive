@@ -164,7 +164,8 @@ to build:
 python notebooks/ui.py
 ```
 
-That registers the partitions as views named `chains` and `metrics` and opens
+That registers the partitions as views named `chains`, `metrics` and `greeks`
+(the derived layer) and opens
 DuckDB's notebook-style UI, with schema browsing, autocomplete and result
 grids. The connection is in-memory and the views read the parquet directly, so
 nothing typed into the UI can modify the archive.
@@ -308,7 +309,20 @@ streamlit run dashboard/coverage.py
 The coverage heatmap is the ops view, and the one page exempt from the
 three-times rule - it catches the silent hole where a single symbol fails for
 weeks while every run reports success. Only NYSE trading days are shown, so
-weekends never read as gaps. Everything else stays in notebooks.
+weekends never read as gaps.
+
+The **Data explorer** page, in the same app's sidebar, is the second page and
+earned its place the way the rule says - it was asked for. It shows the data
+rather than whether it arrived: pick a symbol and a snapshot to get the chain
+(calls and puts by strike, with IV and delta), the volatility smile, the term
+structure, IV index / IV rank / spot across every snapshot, and a sortable
+table of every symbol's volatility metrics. Anything beyond that still starts
+life as a notebook query.
+
+Streamlit listens on every interface, so other machines on the same network
+can open it at `http://<mac-name>.local:8501` (or whatever `--server.port`
+says). There is no login: it is read-only and shows market data only, but do
+not leave it running on a network you do not trust.
 
 ## Backup
 
@@ -324,7 +338,8 @@ The local copy stays authoritative so analysis never pays egress.
 Phase 5 is deliberately unbuilt, per the "as earned" rule:
 
 - **More dashboard pages.** A question earns a page after being asked three
-  times. Until then it is a notebook query.
+  times - or by being asked for outright, as the Data explorer was. Until then
+  it is a notebook query.
 - **The morning screener.** Wants real IV-rank history behind it first.
 - **DXLink streaming** for vendor greeks. `streamer_symbol` is stored from day
   one so v2 can subscribe without a migration, and vendor greeks will land in

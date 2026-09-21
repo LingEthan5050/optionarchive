@@ -3,7 +3,7 @@
   "configurations": [
     {
       "name": "coverage",
-      "runtimeExecutable": ".venv/Scripts/streamlit.exe",
+      "runtimeExecutable": ".venv/bin/streamlit",
       "runtimeArgs": ["run", "dashboard/coverage.py", "--server.port", "8899", "--server.headless", "true"],
       "port": 8899
     }
