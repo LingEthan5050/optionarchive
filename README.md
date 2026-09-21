@@ -333,6 +333,52 @@ ARCHIVE_REMOTE=b2:my-bucket/optionarchive ./deploy/backup.sh
 Copy, not sync-with-delete: a local mistake must not propagate to the backup.
 The local copy stays authoritative so analysis never pays egress.
 
+## Discord account bot
+
+A private bot for checking positions and balances without a trading-capable
+session on your phone.
+
+```
+/positions   every open position with days left and entry prices
+/balance     net liq, cash and buying power per account, and the total
+/expiring    options sorted by days to expiration
+```
+
+Plus a DM each NYSE trading day at 16:30 ET listing option positions by days
+left, flagged at 7 and 3 days. It reuses the archiver's `read`-scope
+credential, so it can see the account but cannot trade, move money or change
+anything.
+
+**What it does and does not put in Discord.** Discord keeps message history
+indefinitely and does not encrypt it end to end, so the design keeps as little
+there as possible:
+
+- Command replies are *ephemeral* - only you see them and they are not saved
+  to the chat. Money figures appear only here.
+- The daily DM is the one thing saved to history, and it carries symbol,
+  expiration, side and days left - no prices, balances or account numbers.
+- The bot answers one Discord user, `DISCORD_OWNER_ID`, and refuses everyone
+  else before fetching anything.
+
+Its weak point is your Discord account: whoever gets into it can run the
+commands. Turn on two-factor authentication there.
+
+Setup, once:
+
+1. Discord Developer Portal -> New Application -> Bot -> Reset Token. No
+   privileged intents are needed.
+2. OAuth2 -> URL Generator: scopes `bot` and `applications.commands`, no
+   permissions. Open the URL and add the bot to a private server that only
+   you are in.
+3. Put `DISCORD_BOT_TOKEN`, `DISCORD_OWNER_ID` and `DISCORD_GUILD_ID` in
+   `.env` (`.env.example` says where to find each).
+4. `uv pip install -e ".[dev,bot]"`, then re-run `./deploy/install-macos.sh`,
+   which schedules the bot only once those settings exist.
+
+The pre-commit hook refuses a populated `DISCORD_BOT_TOKEN`, since Discord
+tokens are not JWT-shaped and would pass the check that catches the
+tastytrade one.
+
 ## Where this stops
 
 Phase 5 is deliberately unbuilt, per the "as earned" rule:

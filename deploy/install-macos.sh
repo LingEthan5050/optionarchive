@@ -18,6 +18,7 @@ AM_LABEL="com.chainarchiver.am"
 PM_LABEL="com.chainarchiver.pm"
 DERIVE_LABEL="com.chainarchiver.derive"
 BACKUP_LABEL="com.chainarchiver.backup"
+BOT_LABEL="com.chainarchiver.bot"
 
 FORCE=0
 for arg in "$@"; do
@@ -36,7 +37,7 @@ echo "Repo:   $REPO"
 # from it silently repoints the 09:45/12:45/15:45 schedule at the wrong tree:
 # no error, nothing in the output, and you find out when half-finished code
 # runs against the market instead of the code you deployed.
-for label in "$AM_LABEL" "$PM_LABEL" "$DERIVE_LABEL" "$BACKUP_LABEL"; do
+for label in "$AM_LABEL" "$PM_LABEL" "$DERIVE_LABEL" "$BACKUP_LABEL" "$BOT_LABEL"; do
     plist="$AGENTS/$label.plist"
     [ -f "$plist" ] || continue
     installed="$(/usr/libexec/PlistBuddy -c 'Print :WorkingDirectory' "$plist" 2>/dev/null || true)"
@@ -208,6 +209,47 @@ PLIST
     echo "Wrote:  $AGENTS/$BACKUP_LABEL.plist"
 }
 
+# The Discord bot is the one agent that runs continuously rather than on a
+# timer: it holds a connection open so slash commands get answered. KeepAlive
+# restarts it if it dies; ThrottleInterval stops a bad token from turning
+# that into a restart every ten seconds.
+write_bot_agent() {
+    cat > "$AGENTS/$BOT_LABEL.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>$BOT_LABEL</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>$PYTHON</string>
+        <string>-m</string>
+        <string>account_bot</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>$REPO</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>300</integer>
+
+    <key>StandardOutPath</key>
+    <string>$LOGS/bot.log</string>
+    <key>StandardErrorPath</key>
+    <string>$LOGS/bot.log</string>
+</dict>
+</plist>
+PLIST
+    echo "Wrote:  $AGENTS/$BOT_LABEL.plist"
+}
+
 interval() {
     printf '        <dict><key>Hour</key><integer>%s</integer><key>Minute</key><integer>%s</integer></dict>' "$1" "$2"
 }
@@ -250,6 +292,22 @@ else
     echo "      cannot be backfilled - a lost day is lost permanently. Set up a"
     echo "      remote with 'rclone config', add ARCHIVE_REMOTE to .env, and"
     echo "      re-run this script."
+fi
+
+# The Discord bot, only once it has somewhere to connect: a token and the one
+# user it answers. Without them it would exit at start and launchd would keep
+# restarting it.
+env_value() {
+    sed -n "s/^$1=//p" "$REPO/.env" 2>/dev/null | tr -d '"' | head -1 || true
+}
+if [ -n "$(env_value DISCORD_BOT_TOKEN)" ] && [ -n "$(env_value DISCORD_OWNER_ID)" ]; then
+    if "$PYTHON" -c "import discord" 2>/dev/null; then
+        write_bot_agent
+        LABELS="$LABELS $BOT_LABEL"
+    else
+        echo "WARNING: Discord settings found but discord.py is missing; skipping"
+        echo "         the bot. Install it with: uv pip install -e '.[dev,bot]'"
+    fi
 fi
 
 for label in $LABELS; do

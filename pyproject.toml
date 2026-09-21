@@ -22,6 +22,11 @@ dev = [
     "pandas>=2.0",
     "streamlit>=1.30",
 ]
+# The Discord account bot. Optional because the archiver never needs it and
+# it is the one component that touches account data rather than market data.
+bot = [
+    "discord.py>=2.4",
+]
 
 [project.scripts]
 archiver = "chain_archiver.cli:main"
@@ -31,4 +36,4 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["chain_archiver"]
+packages = ["chain_archiver", "account_bot"]

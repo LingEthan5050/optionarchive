@@ -25,5 +25,12 @@ if git diff --cached -U0 | grep -qE '^\+\s*TT_(CLIENT_SECRET|REFRESH_TOKEN)\s*=\
     fail=1
 fi
 
+# 4. Refuse a populated Discord bot token. These are not JWT-shaped - they
+#    do not start with eyJ - so check 2 above would let one through.
+if git diff --cached -U0 | grep -qE '^\+\s*DISCORD_BOT_TOKEN\s*=\s*\S+'; then
+    echo "BLOCKED: staged change assigns a value to DISCORD_BOT_TOKEN."
+    fail=1
+fi
+
 [ "$fail" -eq 0 ] || echo "Commit aborted. Unstage the offending change."
 exit $fail
