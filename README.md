@@ -342,8 +342,27 @@ session on your phone.
 /positions   every open position with days left and entry prices
 /balance     net liq, cash and buying power per account, and the total
 /expiring    the summary right now, with dollar amounts (only you see it)
+/note        record why you opened a trade
+/recap       this week's closed trades, with your notes
 /alerttest   post a test message where alerts go
 ```
+
+`/positions` opens with the portfolio's **theta per day** (dollars from time
+decay) and **beta-weighted delta** (the whole portfolio restated as SPY
+shares), and shows under each trade its delta, theta, and **IV rank now vs
+at entry** - the entry figure read from this archive's metrics, so it is
+available for watchlist symbols from the archive's first capture and shown
+as "n/a" otherwise. Greeks use the archiver's own Black-Scholes model with
+IV solved from live mids. VIX options, whose prices follow VIX futures
+rather than the spot index, are left out of the totals and named.
+
+**Journal.** `/note SPY selling premium, IVR 60` records your reasoning.
+Notes show under the trade in `/positions`, and each Friday (or the last
+trading day of the week) at 16:15 ET a recap is DM'd - not posted in the
+channel, since it is your reasoning in your own words - listing the week's
+closed trades beside the notes written for them. Profit there is as last
+seen by the alert check, within a few hours of the close, not the exact
+fill. Notes and the trade record live in `data/bot/journal.json`.
 
 Plus, posted in the `#options` channel (`ALERT_CHANNEL`; a DM if that channel
 is missing), a summary at 10:00 and 16:00 ET each NYSE trading day
@@ -357,6 +376,9 @@ profit, flagged 🟡 at 28 days and 🔴 at 21 - and rule-of-thumb alerts checke
 - **50% of max profit** on short-premium (credit) trades - tastytrade's
   take-profit guideline. Debit trades have no equally standard rule, so they
   get the DTE alerts only.
+- **Tested short strike** on credit trades - once when the stock comes within
+  2% of a short strike (`TESTED_BUFFER`), once when it moves through it.
+  tastytrade's other core management rule is to act on the tested side.
 
 **Earnings warnings** ride the same checks, for what you actually hold:
 

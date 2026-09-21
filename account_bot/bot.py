@@ -5,6 +5,8 @@
   /positions   every open trade with profit %, days left and entry prices
   /balance     net liq, cash and buying power per account, and the total
   /expiring    the summary right now, with dollar amounts (only you see it)
+  /note        record why you opened a trade
+  /recap       this week's closed trades, with your notes
   /alerttest   post a test message where alerts go
 
 Every command reply is EPHEMERAL - only you see it and it is not saved to the
@@ -40,7 +42,7 @@ import discord
 from discord import app_commands
 from discord.ext import tasks
 
-from account_bot import account, earnings, market, messages, rules
+from account_bot import account, earnings, journal, market, messages, rules
 from chain_archiver import calendar as trading_calendar
 from chain_archiver.auth import TastytradeClient
 from chain_archiver.config import Settings
@@ -55,6 +57,10 @@ DEFAULT_SUMMARY_TIMES = (time(10, 0), time(16, 0))
 #: an alert arrives while you can still act on it; the first check leaves the
 #: open's wide spreads fifteen minutes to settle before quotes are trusted.
 ALERT_CHECKS = (time(9, 45), time(12, 0), time(14, 0), time(15, 30))
+
+#: The weekly recap, on the last trading day of each week. After the 16:00
+#: summary and the 15:30 alert check, so the week's last observation is in.
+RECAP_AT = time(16, 15)
 
 
 class AccountBot(discord.Client):
@@ -83,6 +89,7 @@ class AccountBot(discord.Client):
         self.profit_target = profit_target
         self.alert_channel = alert_channel
         self.alert_log = rules.AlertLog(settings.data_dir / "bot" / "alerts.json")
+        self.journal = journal.Journal(settings.data_dir / "bot" / "journal.json")
 
     # -- tastytrade, off the event loop -----------------------------------
 
@@ -143,7 +150,8 @@ class AccountBot(discord.Client):
         @self.tree.command(description="Open trades with profit %, days left and entry prices")
         async def positions(interaction: discord.Interaction) -> None:
             async def build():
-                return messages.positions_detail(await self.snapshot())
+                return messages.positions_detail(await self.snapshot(),
+                                                 notes=self.journal)
             await self.reply(interaction, build)
 
         @self.tree.command(description="Balances and buying power (only you see this)")
@@ -158,6 +166,21 @@ class AccountBot(discord.Client):
                 snap = await self.snapshot(balances=True, prior=True)
                 now = datetime.now(account.EASTERN)
                 return self.render_summary(snap, f"{now:%H:%M} ET", dollars=True)
+            await self.reply(interaction, build)
+
+        @self.tree.command(description="Note why you opened a trade (shown in /positions and the recap)")
+        @app_commands.describe(symbol="Underlying, e.g. SPY", note="Your reasoning, in your own words")
+        async def note(interaction: discord.Interaction, symbol: str, note: str) -> None:
+            async def build():
+                saved = self.journal.add_note(symbol, note, datetime.now(account.EASTERN))
+                return (f"📝 Saved for **{saved['symbol']}**. It shows under that trade "
+                        f"in /positions and in the weekly recap.")
+            await self.reply(interaction, build)
+
+        @self.tree.command(description="This week's closed trades, with your notes")
+        async def recap(interaction: discord.Interaction) -> None:
+            async def build():
+                return self.journal.recap(account.today_eastern())
             await self.reply(interaction, build)
 
         @self.tree.command(description="Post a test message where alerts go")
@@ -190,6 +213,10 @@ class AccountBot(discord.Client):
         self.alerts.before_loop(self.wait_until_ready)
         self.alerts.start()
 
+        self.weekly = tasks.loop(time=RECAP_AT.replace(tzinfo=account.EASTERN))(self.send_recap)
+        self.weekly.before_loop(self.wait_until_ready)
+        self.weekly.start()
+
     async def on_ready(self) -> None:
         log.info("Connected as %s; summaries at %s ET (%s)", self.user,
                  ", ".join(f"{t:%H:%M}" for t in self.summary_times),
@@ -214,6 +241,15 @@ class AccountBot(discord.Client):
         if await self.post(self.render_summary(snap, stamp, self.summary_dollars)):
             log.info("Summary sent: %d option trade(s)",
                      len(rules.group_trades(snap.positions)))
+
+    async def send_recap(self) -> None:
+        """The week's closed trades and notes, as a DM: it is a journal in
+        your own words, so it goes only to you, not to the alert channel."""
+        today = account.today_eastern()
+        if not journal.last_trading_day_of_week(today):
+            return
+        if await self.dm_owner(self.journal.recap(today)):
+            log.info("Weekly recap sent")
 
     async def dm_owner(self, text: str) -> bool:
         try:
@@ -264,6 +300,12 @@ class AccountBot(discord.Client):
             return
         held, mids = snap.positions, snap.mids
         upcoming = earnings.from_metrics(snap.metrics, today)
+        try:
+            closed = self.journal.observe(snap)
+            if closed:
+                log.info("Journal: %d trade(s) closed or expired", len(closed))
+        except Exception:  # noqa: BLE001 - the journal must never stop alerts
+            log.exception("Journal: could not record open trades")
         trades = rules.group_trades(held)
         stocks = [p for p in held if not p.is_option]
         due = rules.evaluate(trades, mids, today, self.dte_alerts, self.profit_target)

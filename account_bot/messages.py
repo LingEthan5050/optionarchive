@@ -174,7 +174,8 @@ def _ivr_text(trade, snap: Snapshot) -> str | None:
     return text
 
 
-def positions_detail(snap: Snapshot, now: datetime | None = None) -> str:
+def positions_detail(snap: Snapshot, now: datetime | None = None,
+                     notes=None) -> str:
     """EPHEMERAL only: every trade with its profit, legs and entry prices.
 
     Option legs are grouped into trades (rules.group_trades), because profit
@@ -210,6 +211,11 @@ def positions_detail(snap: Snapshot, now: datetime | None = None) -> str:
                 detail.append(ivr)
             if detail:
                 lines.append("  " + " · ".join(detail))
+            if notes is not None:
+                opened = min((p.opened_on for p in trade.legs if p.opened_on), default=None)
+                for n in notes.notes_for(trade.underlying,
+                                         opened.isoformat() if opened else None)[-2:]:
+                    lines.append(f"  📝 {n['at'][:10]}: {n['text']}")
             for leg in sorted(trade.legs, key=lambda p: (p.option_type != "P", p.strike or 0)):
                 side = "short" if leg.quantity < 0 else "long"
                 entry = (f" · opened {leg.average_open_price:,.2f}"
