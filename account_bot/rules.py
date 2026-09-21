@@ -70,13 +70,28 @@ class Trade:
             return None
         return -sum(p.quantity * mids[p.symbol] * p.multiplier for p in self.legs)
 
-    def profit_share(self, mids: dict[str, float]) -> float | None:
-        """Fraction of max profit captured, for credit trades only. Max
-        profit on a short-premium trade is the credit itself."""
+    def pnl(self, mids: dict[str, float]) -> tuple[str, float] | None:
+        """Profit as a fraction, and which kind - they are not comparable.
+
+        credit: share of max profit captured. Max profit on a short-premium
+                trade is the credit itself, so this tops out at 1.0 (100%)
+                and is the number tastytrade's 50% rule is stated in.
+        debit:  return on what was paid. No ceiling on the upside; -1.0
+                (-100%) if the options expire worthless.
+        """
         credit, close = self.credit, self.cost_to_close(mids)
-        if credit is None or close is None or credit <= 0:
+        if credit is None or close is None or credit == 0:
             return None
-        return (credit - close) / credit
+        if credit > 0:
+            return "credit", (credit - close) / credit
+        paid, worth = -credit, -close
+        return "debit", (worth - paid) / paid
+
+    def profit_share(self, mids: dict[str, float]) -> float | None:
+        """Share of max profit, for credit trades only - what the 50% alert
+        measures."""
+        result = self.pnl(mids)
+        return result[1] if result and result[0] == "credit" else None
 
     def describe(self) -> str:
         """Symbol, expiration and strikes - never a price or an amount."""

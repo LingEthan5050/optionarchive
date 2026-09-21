@@ -2,7 +2,7 @@
 
     python -m account_bot
 
-  /positions   every open position with days left and entry prices
+  /positions   every open trade with profit %, days left and entry prices
   /balance     net liq, cash and buying power per account, and the total
   /expiring    the daily reminder, on demand
 
@@ -90,6 +90,14 @@ class AccountBot(discord.Client):
                 held = account.positions(client, account.accounts(client))
                 symbols = [p.symbol for p in held if p.is_option]
                 quotes = fetch_option_quotes(client, symbols) if symbols else {}
+                stocks = sorted({p.symbol for p in held
+                                 if p.instrument_type == "Equity"})
+                if stocks:
+                    data = client.get("/market-data/by-type",
+                                      params={"equity": ",".join(stocks)})
+                    for item in data.get("items") or []:
+                        if item.get("symbol"):
+                            quotes[item["symbol"]] = item
             finally:
                 client.close()
             mids = {}
@@ -127,11 +135,11 @@ class AccountBot(discord.Client):
     # -- lifecycle -----------------------------------------------------------
 
     async def setup_hook(self) -> None:
-        @self.tree.command(description="Open positions with days left and entry prices")
+        @self.tree.command(description="Open trades with profit %, days left and entry prices")
         async def positions(interaction: discord.Interaction) -> None:
             async def build():
-                held = await self.fetch()
-                return messages.positions_detail(held, account.today_eastern())
+                held, mids = await self.fetch_with_mids()
+                return messages.positions_detail(held, account.today_eastern(), mids)
             await self.reply(interaction, build)
 
         @self.tree.command(description="Balances and buying power (only you see this)")

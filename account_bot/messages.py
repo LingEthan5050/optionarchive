@@ -19,6 +19,7 @@ from collections import defaultdict
 from datetime import date
 
 from account_bot.account import Balance, Position
+from account_bot.rules import group_trades
 
 #: Discord rejects messages over 2000 characters.
 LIMIT = 2000
@@ -88,8 +89,23 @@ def reminder(positions: list[Position], today: date) -> str | None:
     return "\n".join(lines)
 
 
-def positions_detail(positions: list[Position], today: date) -> str:
-    """EPHEMERAL only: every position, with entry prices."""
+def _pct(kind: str, share: float) -> str:
+    if kind == "credit":
+        return f"**{share:.0%} of max profit**"
+    return f"**{share:+.0%} return**"
+
+
+def positions_detail(positions: list[Position], today: date,
+                     mids: dict[str, float] | None = None) -> str:
+    """EPHEMERAL only: every trade with its profit, legs and entry prices.
+
+    Option legs are grouped into trades (rules.group_trades), because profit
+    only means something for the whole structure. A credit trade shows the
+    share of max profit captured - the number tastytrade's 50% rule uses -
+    and a debit trade shows its return on what was paid. The two are not the
+    same scale: the first tops out at 100%, the second has no ceiling.
+    """
+    mids = mids or {}
     if not positions:
         return "No open positions."
     by_account: dict[str, list[Position]] = defaultdict(list)
@@ -99,18 +115,30 @@ def positions_detail(positions: list[Position], today: date) -> str:
     lines = []
     for account, held in by_account.items():
         lines.append(f"**{account}**")
-        options = sorted((p for p in held if p.is_option), key=lambda p: p.expires)
-        others = sorted((p for p in held if not p.is_option), key=lambda p: p.symbol)
-        for p in options:
-            entry = (f" · opened {p.average_open_price:,.2f}"
-                     if p.average_open_price is not None else "")
-            lines.append(f"{_flag(p.days_left(today))} {_contract(p)} — "
-                         f"{_when(p.days_left(today))}{entry}")
-        for p in others:
+        for trade in group_trades(held):
+            days = trade.days_left(today)
+            result = trade.pnl(mids)
+            profit = f" · {_pct(*result)}" if result else " · profit —"
+            lines.append(f"{_flag(days)} {trade.describe()} — {_when(days)}{profit}")
+            for leg in sorted(trade.legs, key=lambda p: (p.option_type != "P", p.strike or 0)):
+                side = "short" if leg.quantity < 0 else "long"
+                entry = (f" · opened {leg.average_open_price:,.2f}"
+                         if leg.average_open_price is not None else "")
+                now = f" · now {mids[leg.symbol]:,.2f}" if leg.symbol in mids else ""
+                lines.append(f"  └ {side} {abs(leg.quantity):g} "
+                             f"{leg.strike:g}{leg.option_type}{entry}{now}")
+        for p in sorted((p for p in held if not p.is_option), key=lambda p: p.symbol):
             entry = (f" @ {p.average_open_price:,.2f}"
                      if p.average_open_price is not None else "")
-            lines.append(f"▪️ {p.symbol} · {p.quantity:+g} sh{entry}")
+            change = ""
+            if p.symbol in mids and p.average_open_price:
+                move = (mids[p.symbol] - p.average_open_price) / p.average_open_price
+                # A short stock position profits when the price falls.
+                change = f" · **{move * (1 if p.quantity > 0 else -1):+.1%}**"
+            lines.append(f"▪️ {p.symbol} · {p.quantity:+g} sh{entry}{change}")
         lines.append("")
+    lines.append("-# Credit trades: share of max profit. Debit trades and "
+                 "stock: return on cost. Live mid prices.")
     return "\n".join(lines).rstrip()
 
 
