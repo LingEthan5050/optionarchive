@@ -8,6 +8,8 @@
     achievable profit is behind you by then, and holding for the rest means
     carrying the full risk for a shrinking reward.
 
+A third, tested(), watches short strikes the stock is approaching.
+
 These are published rules of thumb that the alerts remind you of. They are
 not a recommendation about any particular position.
 
@@ -34,6 +36,8 @@ from account_bot.account import Position
 
 DEFAULT_DTE_ALERTS = (28, 21)
 DEFAULT_PROFIT_TARGET = 0.50
+#: How close the stock may come to a short strike before it counts as tested.
+DEFAULT_TESTED_BUFFER = 0.02
 
 
 @dataclass
@@ -175,6 +179,48 @@ def evaluate(
                 f"{share:.0%} of max profit. tastytrade's guideline: take "
                 f"profits at {profit_target:.0%}.",
             ))
+    return alerts
+
+
+def tested(trades: list[Trade], spots: dict[str, float],
+           buffer: float = DEFAULT_TESTED_BUFFER) -> list[Alert]:
+    """Short strikes the stock is approaching or has crossed.
+
+    tastytrade's other core management rule: act on the side that is being
+    tested. Credit trades only - in a debit spread the short strike being
+    reached is the best case, not a warning. Two levels, each firing once:
+    within `buffer` of the strike, then through it (in the money).
+    """
+    alerts = []
+    for trade in trades:
+        credit = trade.credit
+        spot = spots.get(trade.underlying)
+        if credit is None or credit <= 0 or not spot:
+            continue
+        for p in trade.legs:
+            if p.quantity >= 0 or not p.strike:
+                continue
+            # Distance still to travel before the strike is in the money:
+            # positive while out of the money, negative once through it.
+            room = ((spot - p.strike) if p.option_type == "P"
+                    else (p.strike - spot)) / p.strike
+            name = f"short {p.strike:g} {'put' if p.option_type == 'P' else 'call'}"
+            tag = f"@{p.strike:g}{p.option_type}|{trade.key}"
+            if room < 0:
+                alerts.append(Alert("near" + tag, ""))  # never announce it late
+                alerts.append(Alert(
+                    "itm" + tag,
+                    f"🎯 **{trade.describe()}** — {trade.underlying} has moved "
+                    f"through your {name} ({-room:.1%} in the money). tastytrade "
+                    f"treats a tested short strike as the signal to manage the trade.",
+                ))
+            elif room <= buffer:
+                alerts.append(Alert(
+                    "near" + tag,
+                    f"🎯 **{trade.describe()}** — {trade.underlying} is {room:.1%} "
+                    f"from your {name}. tastytrade treats a tested short strike "
+                    f"as the signal to manage the trade.",
+                ))
     return alerts
 
 

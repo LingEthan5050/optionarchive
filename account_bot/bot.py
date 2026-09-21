@@ -63,7 +63,8 @@ class AccountBot(discord.Client):
                  dte_alerts: tuple[int, ...] = rules.DEFAULT_DTE_ALERTS,
                  profit_target: float = rules.DEFAULT_PROFIT_TARGET,
                  alert_channel: str = "options",
-                 summary_dollars: bool = False) -> None:
+                 summary_dollars: bool = False,
+                 tested_buffer: float = rules.DEFAULT_TESTED_BUFFER) -> None:
         # Guilds only. Slash commands arrive as interactions, and discord.py
         # needs the (unprivileged) guilds intent to keep its state straight;
         # the bot has no reason to see messages, members or presence.
@@ -76,6 +77,7 @@ class AccountBot(discord.Client):
         self.summary_times = tuple(t.replace(tzinfo=account.EASTERN)
                                    for t in summary_times)
         self.summary_dollars = summary_dollars
+        self.tested_buffer = tested_buffer
         self.tree = app_commands.CommandTree(self)
         self.dte_alerts = dte_alerts
         self.profit_target = profit_target
@@ -264,6 +266,7 @@ class AccountBot(discord.Client):
         stocks = [p for p in held if not p.is_option]
         due = rules.evaluate(trades, mids, today, self.dte_alerts, self.profit_target)
         due += earnings.evaluate(trades, stocks, upcoming, today)
+        due += rules.tested(trades, snap.spots, self.tested_buffer)
         new = self.alert_log.new(due)
         loud = [a for a in new if a.text]
         if loud:
@@ -321,7 +324,9 @@ def main() -> int:
     times = _times(os.environ.get("SUMMARY_TIMES", ""), DEFAULT_SUMMARY_TIMES)
     dollars = os.environ.get("SUMMARY_DOLLARS", "").strip().lower() in ("1", "true", "yes", "on")
 
+    buffer = float(os.environ.get("TESTED_BUFFER") or rules.DEFAULT_TESTED_BUFFER)
+
     bot = AccountBot(settings, int(owner), int(guild) if guild.isdigit() else None,
-                     times, dte, target, channel, dollars)
+                     times, dte, target, channel, dollars, buffer)
     bot.run(token, log_handler=None)
     return 0
